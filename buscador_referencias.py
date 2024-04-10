@@ -2,6 +2,8 @@ import os
 import sys
 import re
 import shutil
+import random
+import time
 from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QMainWindow, QHeaderView, QTextEdit, QTreeWidget, QTreeWidgetItem, QLabel, QFileDialog, QCheckBox, QProgressBar
 from PyQt5.QtWidgets import QSizePolicy, QMessageBox, QAbstractItemView, QComboBox, QScrollBar
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QEvent
@@ -19,6 +21,7 @@ class SearchThread(QThread):
         self.path = path
 
     def run(self):
+        results_with_info = []  # Añade esta línea
         numbers = [re.findall(r'\d+', line)[0] for line in self.text_lines if re.findall(r'\d+', line)]
         results = []
 
@@ -55,17 +58,32 @@ class SearchThread(QThread):
                         results.append(os.path.normpath(os.path.join(root, file)))
             self.progress.emit()
 
-        self.finished.emit(results)
+        for result in results:
+            stat_info = os.stat(result)
+            size_in_mb = stat_info.st_size / (1024 * 1024)
+            mtime = time.ctime(stat_info.st_mtime)
+            result_tuple = (result, size_in_mb, mtime)
+            results_with_info.append(result_tuple)
 
-
+        self.finished.emit(results_with_info)
+        
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
         self.path = None
         self.is_searching = False  
         self.changing_all_checkboxes = False  # Nueva variable
+        self.colors = {}  # Nuevo diccionario para almacenar los colores
         self.initUI()
         self.search_thread = None
+
+    def get_color_for_result(self, component2):
+        if component2 in self.colors:
+            return self.colors[component2]
+        else:
+            random_color = QColor(random.randint(200, 255), random.randint(200, 255), random.randint(200, 255))  # Valores más altos para un color más claro
+            self.colors[component2] = random_color
+            return random_color
 
     def initUI(self):
         self.setWindowTitle('Buscador de Carpetas')
@@ -276,6 +294,7 @@ class App(QMainWindow):
             self.progress_bar.setMaximum(0)
             self.generate_button.setText('Parar búsqueda')
             self.is_searching = True
+            self.original_order = [self.entry.item(i, 0).text() for i in range(self.entry.rowCount())]
         else:
             if self.search_thread is not None and self.search_thread.isRunning():
                 self.search_thread.terminate()
@@ -291,14 +310,25 @@ class App(QMainWindow):
         # This will just pulse the progress bar to indicate that something is happening
         self.progress_bar.setValue((self.progress_bar.value() + 1) % (self.progress_bar.maximum() + 1))
 
-    def on_search_finished(self, result_folders):
-        self.status_label.setText("Listo")
-        self.progress_bar.reset()
-        self.progress_bar.setMaximum(1)
-        self.progress_bar.setValue(1)
-        self.progress_bar.setStyleSheet("QProgressBar::chunk { background-color: #30BA49; }")
-        self.generate_button.setText('Buscar')
-        self.is_searching = False
+    def on_search_finished(self, results):
+        grouped_results = {}
+        for result in results:
+            # Obtén el criterio de búsqueda original para este resultado
+            search_criterion = result[0]  # Asume que el criterio de búsqueda es el primer elemento de `result`
+            # Añade el resultado a la lista de resultados para este criterio de búsqueda
+            if search_criterion in grouped_results:
+                grouped_results[search_criterion].append(result)
+            else:
+                grouped_results[search_criterion] = [result]
+        # Ahora `grouped_results` es un diccionario donde las claves son los criterios de búsqueda
+        # y los valores son listas de resultados para cada criterio
+        # Guarda `grouped_results` para que podamos usarlo más tarde
+        self.grouped_results = grouped_results
+        self.display_results()
+
+        # Diccionario para guardar la última referencia procesada y su color
+        last_reference = {"ref": None, "color": None}
+
         for folder in result_folders:
             # Parse folder name for additional columns
             folder_name = os.path.split(folder)[1]
@@ -314,7 +344,48 @@ class App(QMainWindow):
             item.setCheckState(0, Qt.Unchecked)
             item.setData(3, Qt.UserRole, folder)
 
+            # Si la referencia es la misma que la anterior, usar el mismo color
+            if last_reference["ref"] == component2:
+                color = last_reference["color"]
+            else:
+                # Si la referencia ha cambiado, alternar el color
+                color = QColor("white") if last_reference["color"] == QColor("lightgray") else QColor("lightgray")
+
+            for i in range(item.columnCount()):
+                item.setBackground(i, color)
+
+            # Guardar la referencia y el color actuales para la próxima iteración
+            last_reference = {"ref": component2, "color": color}
+
             self.results.addTopLevelItem(item)
+
+    def display_results(self):
+        self.results.clear()
+        # Ordena las claves de `grouped_results` según su orden en `original_order`
+        ordered_search_criteria = sorted(self.grouped_results.keys(), key=lambda criterion: self.original_order.index(criterion))
+        # Recorre los criterios de búsqueda en el orden correcto
+        for criterion in ordered_search_criteria:
+            # Recorre los resultados para este criterio de búsqueda
+            for result in self.grouped_results[criterion]:
+                # Aquí `result` es un resultado individual
+                # Tendrás que ajustar el siguiente código para que se ajuste a cómo se estructuran tus resultados
+                path, size_in_mb, mtime = result
+                item = QTreeWidgetItem()
+                item.setText(0, path)
+                item.setToolTip(0, f"Size: {size_in_mb} MB\nLast modified: {mtime}")
+                self.results.addTopLevelItem(item)
+        # Cuando termines, actualiza la etiqueta de estado para mostrar cuántos resultados se encontraron
+        self.status_label.setText(f"Se encontraron {len(self.results)} resultado(s).")
+
+
+    def get_number_from_folder_name(self, folder):
+        folder_name = os.path.split(folder)[1]
+        match = re.search(r'\d+', folder_name)
+        if match:
+            return int(match.group(0))  # Retornar el número como un entero para que la ordenación sea numérica, no lexicográfica
+        else:
+            return 0  # Si no hay número, retornar 0 (o cualquier otro valor que tenga sentido en tu contexto)
+
 
     def open_folder(self):
         item = self.results.currentItem()
