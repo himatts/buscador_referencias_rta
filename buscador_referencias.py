@@ -63,6 +63,7 @@ class App(QMainWindow):
         super().__init__()
         self.path = None
         self.is_searching = False  
+        self.changing_all_checkboxes = False  # Nueva variable
         self.initUI()
         self.search_thread = None
 
@@ -143,32 +144,43 @@ class App(QMainWindow):
         # Add the progress_layout to your main layout
         self.layout.addLayout(progress_layout)
 
-        # Crear results list
+        # Create results list
         self.results = QTreeWidget()
         self.results.setSelectionMode(QAbstractItemView.ExtendedSelection)  # Enable multiple selection
+        self.results.setHeaderLabels(['', 'REF', '###', 'Nombre', 'Ruta'])
         self.layout.addWidget(self.results)
         self.results.itemDoubleClicked.connect(self.open_folder)
         self.results.itemClicked.connect(self.handle_item_clicked)  # Moved this line here
-        self.results.setColumnWidth(0, 50)
+        self.results.setColumnWidth(0, 20)
         self.results.setColumnWidth(1, 60)
         self.results.setColumnWidth(2, 60)
         self.results.setColumnWidth(3, 800)
         self.results.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.results.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-
-        # Crear el widget de checkbox para la cabecera
-        checkbox_widget = QCheckBox()
-        checkbox_widget.stateChanged.connect(self.toggle_checkboxes)
-        self.results.setHeaderItem(QTreeWidgetItem(["", "REF", "###", "Nombre", "Ruta"]))
-        self.results.headerItem().setCheckState(0, Qt.Unchecked)
-        self.results.setItemWidget(self.results.headerItem(), 0, checkbox_widget)
-        
+        header = self.results.header()
+        header.setSectionResizeMode(3, QHeaderView.Stretch)  # Cambia '3' al índice de la columna que desees que se ajuste.
         for i in range(self.results.columnCount()):
             self.results.resizeColumnToContents(i)
-        
+        self.selectAllCheckBox = QCheckBox('Seleccionar todos')
+        self.selectAllCheckBox.setTristate(True)
+        self.selectAllCheckBox.stateChanged.connect(self.on_select_all_state_changed)
+        self.selectedCountLabel = QLabel()  # Crea la etiqueta
+        self.selectedCountLabel.setText("Elementos seleccionados: 0")  # Inicializa el texto
+        self.selectAllCheckBox.setCheckState(Qt.PartiallyChecked)
+        self.layout.addWidget(self.selectedCountLabel)  # reemplaza 'self.layout' con tu layout actual
+
+
+        # Asume que self.layout es el layout de tu ventana. Si no es así, reemplaza 'self.layout' por tu layout actual.
+        self.layout.addWidget(self.selectAllCheckBox)
+
+       
         # This line is moved here, after 'self.results' is created
         self.results.itemClicked.connect(self.handle_item_clicked)
+        self.results.itemChanged.connect(self.update_selected_count)
 
+        self.previousSelectAllState = self.selectAllCheckBox.checkState()  # Nueva línea
+ 
+                
         # Status label
         self.status_label = QLabel("Listo")
         self.layout.addWidget(self.status_label)
@@ -191,28 +203,48 @@ class App(QMainWindow):
 
         self.updateButtonTextsAndLabels()
 
-
-    def toggle_checkboxes(self, state):
-        for i in range(self.results.topLevelItemCount()):
-            item = self.results.topLevelItem(i)
-            checkbox = self.results.itemWidget(item, 0)
-            checkbox.setCheckState(state)
-
     def handle_item_clicked(self, item, column):
         if column == 0:  # Columna de checkboxes
-            if item.data(0, Qt.UserRole) == "header":
-                state = item.checkState(0)
-                for i in range(self.results.topLevelItemCount()):
-                    child = self.results.topLevelItem(i)
-                    child.setCheckState(0, state)
-            else:
-                selected_items = self.results.selectedItems()
-                num_selected = len(selected_items)
-                if num_selected == self.results.topLevelItemCount():
-                    self.results.headerItem().setCheckState(0, Qt.Checked)
-                elif num_selected == 0:
-                    self.results.headerItem().setCheckState(0, Qt.Unchecked)
+            # Desmarcar 'selectAllCheckBox' si un item fue desmarcado
+            if item.checkState(0) == Qt.Unchecked:
+                self.selectAllCheckBox.blockSignals(True)
+                self.selectAllCheckBox.setCheckState(Qt.Unchecked)
+                self.selectAllCheckBox.blockSignals(False)
 
+            # Actualizar la etiqueta de cantidad de elementos seleccionados
+            self.update_selected_count()
+
+    def on_select_all_state_changed(self, state):
+        self.changing_all_checkboxes = True  # Estamos cambiando todos los checkboxes
+
+        if state == Qt.Unchecked:
+            for i in range(self.results.topLevelItemCount()):
+                self.results.topLevelItem(i).setCheckState(0, Qt.Unchecked)
+        elif state == Qt.Checked or state == Qt.PartiallyChecked:
+            for i in range(self.results.topLevelItemCount()):
+                self.results.topLevelItem(i).setCheckState(0, Qt.Checked)
+
+        self.changing_all_checkboxes = False  # Hemos terminado de cambiar todos los checkboxes
+        self.update_selected_count()  # Actualizar el contador después de cambiar los checkboxes
+
+    def update_selected_count(self):
+        selected_count = sum(1 for i in range(self.results.topLevelItemCount())
+                             if self.results.topLevelItem(i).checkState(0) == Qt.Checked)
+        self.selectedCountLabel.setText(f"Elementos seleccionados: {selected_count}")
+
+        # Now also update the state of the 'select all' checkbox.
+        if selected_count == 0:
+            self.selectAllCheckBox.blockSignals(True)
+            self.selectAllCheckBox.setCheckState(Qt.Unchecked)
+            self.selectAllCheckBox.blockSignals(False)
+        elif selected_count == self.results.topLevelItemCount():
+            self.selectAllCheckBox.blockSignals(True)
+            self.selectAllCheckBox.setCheckState(Qt.Checked)
+            self.selectAllCheckBox.blockSignals(False)
+        else:
+            self.selectAllCheckBox.blockSignals(True)
+            self.selectAllCheckBox.setCheckState(Qt.PartiallyChecked)
+            self.selectAllCheckBox.blockSignals(False)
 
     def eventFilter(self, obj, event):
         if obj == self.entry:
@@ -234,7 +266,7 @@ class App(QMainWindow):
                 return
             text_lines = [self.entry.item(i, 0).text() for i in range(self.entry.rowCount())]
             self.results.clear()
-            self.status_label.setText("Buscando...")
+            self.status_label.setText(f"Buscando en {self.path}...")
             file_type = self.file_type_combo.currentText()
             self.search_thread = SearchThread(text_lines, self.path, file_type)
             self.search_thread.progress.connect(self.update_progress)
@@ -267,7 +299,6 @@ class App(QMainWindow):
         self.progress_bar.setStyleSheet("QProgressBar::chunk { background-color: #30BA49; }")
         self.generate_button.setText('Buscar')
         self.is_searching = False
-        self.results.headerItem().setCheckState(0, Qt.Unchecked)
         for folder in result_folders:
             # Parse folder name for additional columns
             folder_name = os.path.split(folder)[1]
