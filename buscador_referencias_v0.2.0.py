@@ -66,16 +66,6 @@ class App(QMainWindow):
         self.initUI()
         self.search_thread = None
 
-
-
-class App(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.path = None
-        self.is_searching = False  
-        self.initUI()
-        self.search_thread = None
-
     def initUI(self):
         self.setWindowTitle('Buscador de Carpetas')
 
@@ -153,10 +143,9 @@ class App(QMainWindow):
         # Add the progress_layout to your main layout
         self.layout.addLayout(progress_layout)
 
-        # Create results list
+        # Crear results list
         self.results = QTreeWidget()
         self.results.setSelectionMode(QAbstractItemView.ExtendedSelection)  # Enable multiple selection
-        self.results.setHeaderLabels(['', 'REF', '###', 'Nombre', 'Ruta'])
         self.layout.addWidget(self.results)
         self.results.itemDoubleClicked.connect(self.open_folder)
         self.results.itemClicked.connect(self.handle_item_clicked)  # Moved this line here
@@ -166,12 +155,16 @@ class App(QMainWindow):
         self.results.setColumnWidth(3, 800)
         self.results.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.results.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        header = self.results.header()
-        header.setSectionResizeMode(3, QHeaderView.Stretch)  # Cambia '3' al índice de la columna que desees que se ajuste.
+
+        # Crear el widget de checkbox para la cabecera
+        checkbox_widget = QCheckBox()
+        checkbox_widget.stateChanged.connect(self.toggle_checkboxes)
+        self.results.setHeaderItem(QTreeWidgetItem(["", "REF", "###", "Nombre", "Ruta"]))
+        self.results.headerItem().setCheckState(0, Qt.Unchecked)
+        self.results.setItemWidget(self.results.headerItem(), 0, checkbox_widget)
+        
         for i in range(self.results.columnCount()):
             self.results.resizeColumnToContents(i)
-
-
         
         # This line is moved here, after 'self.results' is created
         self.results.itemClicked.connect(self.handle_item_clicked)
@@ -199,12 +192,26 @@ class App(QMainWindow):
         self.updateButtonTextsAndLabels()
 
 
+    def toggle_checkboxes(self, state):
+        for i in range(self.results.topLevelItemCount()):
+            item = self.results.topLevelItem(i)
+            checkbox = self.results.itemWidget(item, 0)
+            checkbox.setCheckState(state)
+
     def handle_item_clicked(self, item, column):
         if column == 0:  # Columna de checkboxes
-            state = item.checkState(0)
-            selected_items = self.results.selectedItems()
-            for selected_item in selected_items:
-                selected_item.setCheckState(0, state)
+            if item.data(0, Qt.UserRole) == "header":
+                state = item.checkState(0)
+                for i in range(self.results.topLevelItemCount()):
+                    child = self.results.topLevelItem(i)
+                    child.setCheckState(0, state)
+            else:
+                selected_items = self.results.selectedItems()
+                num_selected = len(selected_items)
+                if num_selected == self.results.topLevelItemCount():
+                    self.results.headerItem().setCheckState(0, Qt.Checked)
+                elif num_selected == 0:
+                    self.results.headerItem().setCheckState(0, Qt.Unchecked)
 
 
     def eventFilter(self, obj, event):
@@ -260,6 +267,7 @@ class App(QMainWindow):
         self.progress_bar.setStyleSheet("QProgressBar::chunk { background-color: #30BA49; }")
         self.generate_button.setText('Buscar')
         self.is_searching = False
+        self.results.headerItem().setCheckState(0, Qt.Unchecked)
         for folder in result_folders:
             # Parse folder name for additional columns
             folder_name = os.path.split(folder)[1]
