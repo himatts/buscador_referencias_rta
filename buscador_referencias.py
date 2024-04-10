@@ -3,11 +3,10 @@ import sys
 import re
 import shutil
 import random
-import time
 from PyQt5.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QMainWindow, QHeaderView, QTextEdit, QTreeWidget, QTreeWidgetItem, QLabel, QFileDialog, QCheckBox, QProgressBar
 from PyQt5.QtWidgets import QSizePolicy, QMessageBox, QAbstractItemView, QComboBox, QScrollBar
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QEvent
-from PyQt5.QtGui import QKeySequence, QColor, QTextDocument, QTextCursor, QTextCharFormat
+from PyQt5.QtGui import QBrush, QKeySequence, QColor, QTextDocument, QTextCursor, QTextCharFormat
 
 
 class SearchThread(QThread):
@@ -21,52 +20,37 @@ class SearchThread(QThread):
         self.path = path
 
     def run(self):
-        results_with_info = []  # Añade esta línea
-        numbers = [re.findall(r'\d+', line)[0] for line in self.text_lines if re.findall(r'\d+', line)]
+        def split_alphanumeric(text):
+            return re.findall(r'\d+|\D+', text)
+
+        def has_matching_numbers(name_parts, text_parts):
+            return any(name_num == text_num for name_num, text_num in zip(name_parts, text_parts) if name_num.isdigit() and text_num.isdigit())
+
         results = []
-
-        if self.file_type == "Carpetas":
-            for root, dirs, files in os.walk(self.path):
+        for root, dirs, files in os.walk(self.path):
+            if self.file_type == "Carpetas" or self.file_type == "Nombre de Mueble":
                 for dir in dirs:
-                    if any(number in dir for number in numbers):
+                    dir_parts = split_alphanumeric(dir.lower())
+                    if any(has_matching_numbers(dir_parts, split_alphanumeric(text_line.lower())) for text_line in self.text_lines):
                         results.append(os.path.normpath(os.path.join(root, dir)))
-                self.progress.emit()
-
-        elif self.file_type == "Imágenes":
-            for root, dirs, files in os.walk(self.path):
+            elif self.file_type == "Imágenes":
                 for file in files:
                     if file.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif')):
-                        if any(number in file for number in numbers):
+                        file_parts = split_alphanumeric(file.lower())
+                        if any(has_matching_numbers(file_parts, split_alphanumeric(text_line.lower())) for text_line in self.text_lines):
                             results.append(os.path.normpath(os.path.join(root, file)))
-                self.progress.emit()
-
-        elif self.file_type == "Videos":
-            for root, dirs, files in os.walk(self.path):
+            elif self.file_type == "Videos":
                 for file in files:
                     if file.lower().endswith(('.mp4', '.mov', '.wmv', '.flv', '.avi', '.avchd', '.webm', '.mkv')):
-                        if any(number in file for number in numbers):
+                        file_parts = split_alphanumeric(file.lower())
+                        if any(has_matching_numbers(file_parts, split_alphanumeric(text_line.lower())) for text_line in self.text_lines):
                             results.append(os.path.normpath(os.path.join(root, file)))
-                self.progress.emit()
-
-        elif self.file_type == "Nombre de Mueble":
-            for root, dirs, files in os.walk(self.path):
-                for dir in dirs:
-                    if all(line.lower() in dir.lower() for line in self.text_lines):  # Verifica si cada línea está contenida en el nombre
-                        results.append(os.path.normpath(os.path.join(root, dir)))
-                for file in files:
-                    if all(line.lower() in file.lower() for line in self.text_lines):  # Verifica si cada línea está contenida en el nombre
-                        results.append(os.path.normpath(os.path.join(root, file)))
             self.progress.emit()
 
-        for result in results:
-            stat_info = os.stat(result)
-            size_in_mb = stat_info.st_size / (1024 * 1024)
-            mtime = time.ctime(stat_info.st_mtime)
-            result_tuple = (result, size_in_mb, mtime)
-            results_with_info.append(result_tuple)
+        self.finished.emit(results)
 
-        self.finished.emit(results_with_info)
-        
+
+
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -76,6 +60,7 @@ class App(QMainWindow):
         self.colors = {}  # Nuevo diccionario para almacenar los colores
         self.initUI()
         self.search_thread = None
+        self.found_refs = set()  # Inicializa el conjunto de referencias encontradas        
 
     def get_color_for_result(self, component2):
         if component2 in self.colors:
@@ -86,13 +71,13 @@ class App(QMainWindow):
             return random_color
 
     def initUI(self):
-        self.setWindowTitle('Buscador de Carpetas')
+        self.setWindowTitle('Buscador de Referencias')
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
         self.layout = QVBoxLayout(central_widget)
-        self.resize(800, 600)  # Set initial window size to 800x600
+        self.resize(800, 840)  # Set initial window size
 
         # Create top buttons
         upper_buttons_layout = QHBoxLayout()
@@ -109,6 +94,20 @@ class App(QMainWindow):
         self.clear_button = QPushButton("Borrar todo")
         self.clear_button.clicked.connect(self.clear_all)
         upper_buttons_layout.addWidget(self.clear_button)
+
+        # Create copy buttons
+        copy_buttons_layout = QHBoxLayout()
+        self.layout.addLayout(copy_buttons_layout)
+
+        self.copy_found_button = QPushButton("Copiar REF encontradas")
+        self.copy_found_button.clicked.connect(self.copy_found)
+        self.copy_found_button.setEnabled(False)  # Disable the button at start
+        copy_buttons_layout.addWidget(self.copy_found_button)
+
+        self.copy_not_found_button = QPushButton("Copiar REF no encontradas")
+        self.copy_not_found_button.clicked.connect(self.copy_not_found)
+        self.copy_not_found_button.setEnabled(False)  # Disable the button at start
+        copy_buttons_layout.addWidget(self.copy_not_found_button)
 
         # Create input table
         self.entry = QTableWidget(0, 1)
@@ -148,6 +147,20 @@ class App(QMainWindow):
         self.generate_button.clicked.connect(self.generate_text)
         self.generate_button.setFixedHeight(50)  # Set the button's height to 50 pixels
         self.layout.addWidget(self.generate_button)
+        self.ref_info_label = QLabel()  # Crear la etiqueta
+        self.layout.addWidget(self.ref_info_label)  # Agregar la etiqueta al diseño
+
+        # Crear la etiqueta
+        self.ref_info_label = QLabel()  
+        self.layout.addWidget(self.ref_info_label)  
+
+        # Centrar el texto en la etiqueta
+        self.ref_info_label.setAlignment(Qt.AlignCenter)
+
+        # Configurar el texto en negrita
+        font = self.ref_info_label.font()
+        font.setBold(True)
+        self.ref_info_label.setFont(font)        
 
         # Add a progress bar
         self.progress_bar = QProgressBar(self)
@@ -207,10 +220,6 @@ class App(QMainWindow):
         bottom_buttons_layout = QHBoxLayout()
         self.layout.addLayout(bottom_buttons_layout)
 
-        self.open_all_button = QPushButton("Abrir todo")
-        self.open_all_button.clicked.connect(self.open_all)
-        bottom_buttons_layout.addWidget(self.open_all_button)
-
         self.open_selected_button = QPushButton("Abrir selección")
         self.open_selected_button.clicked.connect(self.open_selected)
         bottom_buttons_layout.addWidget(self.open_selected_button)
@@ -220,6 +229,7 @@ class App(QMainWindow):
         bottom_buttons_layout.addWidget(self.copy_button)  
 
         self.updateButtonTextsAndLabels()
+
 
     def handle_item_clicked(self, item, column):
         if column == 0:  # Columna de checkboxes
@@ -282,7 +292,7 @@ class App(QMainWindow):
                 return
             if self.search_thread is not None and self.search_thread.isRunning():
                 return
-            text_lines = [self.entry.item(i, 0).text() for i in range(self.entry.rowCount())]
+            text_lines = ["".join(self.entry.item(i, j).text() for j in range(self.entry.columnCount()))[:10] for i in range(self.entry.rowCount())]
             self.results.clear()
             self.status_label.setText(f"Buscando en {self.path}...")
             file_type = self.file_type_combo.currentText()
@@ -294,7 +304,7 @@ class App(QMainWindow):
             self.progress_bar.setMaximum(0)
             self.generate_button.setText('Parar búsqueda')
             self.is_searching = True
-            self.original_order = [self.entry.item(i, 0).text() for i in range(self.entry.rowCount())]
+            self.ref_info_label.setText("")  # Restablecer la etiqueta
         else:
             if self.search_thread is not None and self.search_thread.isRunning():
                 self.search_thread.terminate()
@@ -304,27 +314,50 @@ class App(QMainWindow):
                 self.is_searching = False
                 self.progress_bar.setMaximum(1)  # Set maximum to 1 before resetting
                 self.progress_bar.reset()
-
+        text_lines = ["".join(self.entry.item(i, j).text() for j in range(self.entry.columnCount()))[:8] for i in range(self.entry.rowCount())]
+        self.searched_refs = set(text_lines)  # Guarda las referencias únicas buscadas
+        self.copy_found_button.setEnabled(False)
+        self.copy_not_found_button.setEnabled(False)
 
     def update_progress(self):
         # This will just pulse the progress bar to indicate that something is happening
         self.progress_bar.setValue((self.progress_bar.value() + 1) % (self.progress_bar.maximum() + 1))
 
-    def on_search_finished(self, results):
-        grouped_results = {}
-        for result in results:
-            # Obtén el criterio de búsqueda original para este resultado
-            search_criterion = result[0]  # Asume que el criterio de búsqueda es el primer elemento de `result`
-            # Añade el resultado a la lista de resultados para este criterio de búsqueda
-            if search_criterion in grouped_results:
-                grouped_results[search_criterion].append(result)
+    def highlight_rows(self, result_folders):
+        # Obtener las referencias de las carpetas encontradas
+        found_references = set()
+        for folder in result_folders:
+            folder_name = os.path.split(folder)[1]
+            component2 = re.search(r'\d+', folder_name)
+            if component2:
+                component2 = component2.group(0)
+                found_references.add(component2)
+
+        # Resaltar las filas sin resultados
+        for row in range(self.entry.rowCount()):
+            item = self.entry.item(row, 0)
+            found = any(ref in item.text() for ref in found_references)
+            if not found:
+                item.setBackground(QColor(255, 200, 200))  # Fondo rojo claro
             else:
-                grouped_results[search_criterion] = [result]
-        # Ahora `grouped_results` es un diccionario donde las claves son los criterios de búsqueda
-        # y los valores son listas de resultados para cada criterio
-        # Guarda `grouped_results` para que podamos usarlo más tarde
-        self.grouped_results = grouped_results
-        self.display_results()
+                item.setBackground(QColor(255, 255, 255))  # Restaurar el color predeterminado
+
+    def on_search_finished(self, result_folders):
+        self.status_label.setText("Listo")
+        self.progress_bar.reset()
+        self.progress_bar.setMaximum(1)
+        self.progress_bar.setValue(1)
+        self.highlight_rows(result_folders)
+        self.progress_bar.setStyleSheet("QProgressBar::chunk { background-color: #30BA49; }")
+        self.generate_button.setText('Buscar')
+        self.is_searching = False
+        self.copy_found_button.setEnabled(True)
+        self.copy_not_found_button.setEnabled(True)
+        found_refs = set()  # Conjunto para almacenar las referencias únicas encontradas
+        self.found_refs = found_refs  # Guarda las referencias encontradas
+
+        # Ordenar las carpetas por el número en su nombre
+        result_folders.sort(key=self.get_number_from_folder_name)
 
         # Diccionario para guardar la última referencia procesada y su color
         last_reference = {"ref": None, "color": None}
@@ -336,6 +369,7 @@ class App(QMainWindow):
             component2 = re.search(r'\d+', folder_name)
             if component2:
                 component2 = component2.group(0)
+                found_refs.add(component2)  # Agrega la referencia al conjunto
             else:
                 component2 = ''
 
@@ -359,23 +393,9 @@ class App(QMainWindow):
 
             self.results.addTopLevelItem(item)
 
-    def display_results(self):
-        self.results.clear()
-        # Ordena las claves de `grouped_results` según su orden en `original_order`
-        ordered_search_criteria = sorted(self.grouped_results.keys(), key=lambda criterion: self.original_order.index(criterion))
-        # Recorre los criterios de búsqueda en el orden correcto
-        for criterion in ordered_search_criteria:
-            # Recorre los resultados para este criterio de búsqueda
-            for result in self.grouped_results[criterion]:
-                # Aquí `result` es un resultado individual
-                # Tendrás que ajustar el siguiente código para que se ajuste a cómo se estructuran tus resultados
-                path, size_in_mb, mtime = result
-                item = QTreeWidgetItem()
-                item.setText(0, path)
-                item.setToolTip(0, f"Size: {size_in_mb} MB\nLast modified: {mtime}")
-                self.results.addTopLevelItem(item)
-        # Cuando termines, actualiza la etiqueta de estado para mostrar cuántos resultados se encontraron
-        self.status_label.setText(f"Se encontraron {len(self.results)} resultado(s).")
+        found_count = len(found_refs)  # Cuenta las referencias únicas encontradas
+        searched_count = len(self.searched_refs)
+        self.ref_info_label.setText(f"{found_count} de {searched_count} Referencias")  # Actualizar la etiqueta
 
 
     def get_number_from_folder_name(self, folder):
@@ -398,8 +418,15 @@ class App(QMainWindow):
             self.entry.removeRow(row)
 
     def clear_all(self):
+        self.entry.clearContents()
         self.entry.setRowCount(0)
+        self.status_label.setText("Listo")
+        self.progress_bar.reset()  
         self.results.clear()
+        self.selectAllCheckBox.setCheckState(Qt.Unchecked)  # Reset the checkbox
+        self.ref_info_label.setText("")  # Borrar el texto de la etiqueta
+        self.copy_found_button.setEnabled(False)  # Desactivar el botón
+        self.copy_not_found_button.setEnabled(False)  # Desactivar el botón
 
     def paste_information(self):
         clipboard = QApplication.clipboard()
@@ -472,6 +499,27 @@ class App(QMainWindow):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             self.generate_text()
+
+  
+    def copy_found(self):
+        text_lines = []
+        for i in range(self.entry.rowCount()):
+            item = self.entry.item(i, 0)
+            if item.background() != QBrush(QColor(255, 200, 200)):  # Si la celda no está resaltada en rojo claro
+                text_lines.append(item.text())
+        clipboard = QApplication.clipboard()
+        clipboard.setText("\n".join(text_lines))
+
+    def copy_not_found(self):
+        text_lines = []
+        for i in range(self.entry.rowCount()):
+            item = self.entry.item(i, 0)
+            if item.background() == QBrush(QColor(255, 200, 200)):  # Si la celda está resaltada en rojo claro
+                text_lines.append(item.text())
+        clipboard = QApplication.clipboard()
+        clipboard.setText("\n".join(text_lines))
+
+
 
     def updateButtonTextsAndLabels(self):
         # Actualiza el texto del botón de búsqueda y crear copia, y la columna de resultados
