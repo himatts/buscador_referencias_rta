@@ -69,3 +69,7 @@ settings.local.*
 initialize_db.py
 update_db.py
 normalize_references.py 
+
+# Archivos de recursos editables
+resources/icono_editable.ai
+*.ai
