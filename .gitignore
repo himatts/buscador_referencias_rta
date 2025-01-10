@@ -1,0 +1,71 @@
+# Archivos de base de datos
+*.db
+*.sqlite
+*.sqlite3
+database.ini
+db.config
+*_db.*
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Archivos de distribución/construcción
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+*.spec
+
+# Archivos de IDE y editores
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Archivos de log
+*.log
+logs/
+log/
+
+# Archivos temporales
+temp/
+tmp/
+*.tmp
+*.bak
+*.swp
+
+# Archivos de configuración local
+config.local.ini
+*.local.conf
+settings.local.*
+
+# Archivos específicos del proyecto que pueden contener información sensible
+initialize_db.py
+update_db.py
+normalize_references.py 

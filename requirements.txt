@@ -1,0 +1,13 @@
+ImageHash==4.3.1
+  - numpy [required: Any, installed: 1.26.4]
+  - pillow [required: Any, installed: 10.2.0]
+  - PyWavelets [required: Any, installed: 1.5.0]
+    - numpy [required: >=1.22.4,<2.0, installed: 1.26.4]
+  - scipy [required: Any, installed: 1.12.0]
+    - numpy [required: >=1.22.4,<1.29.0, installed: 1.26.4]
+pip==22.3.1
+pipdeptree==2.16.1
+PyQt5==5.15.10
+  - PyQt5-Qt5 [required: >=5.15.2, installed: 5.15.2]
+  - PyQt5-sip [required: >=12.13,<13, installed: 12.13.0]
+setuptools==65.5.0
