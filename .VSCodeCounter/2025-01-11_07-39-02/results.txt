@@ -1,0 +1,45 @@
+Date : 2025-01-11 07:39:02
+Directory : \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta
+Total : 15 files,  2354 codes, 221 comments, 489 blanks, all 3064 lines
+
+Languages
++------------------+------------+------------+------------+------------+------------+
+| language         | files      | code       | comment    | blank      | total      |
++------------------+------------+------------+------------+------------+------------+
+| Python           |         13 |      2,281 |        221 |        465 |      2,967 |
+| Markdown         |          1 |         60 |          0 |         23 |         83 |
+| pip requirements |          1 |         13 |          0 |          1 |         14 |
++------------------+------------+------------+------------+------------+------------+
+
+Directories
++----------------------------------------------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                                                                                                               | files      | code       | comment    | blank      | total      |
++----------------------------------------------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                                                                                                                  |         15 |      2,354 |        221 |        489 |      3,064 |
+| . (Files)                                                                                                                                          |          4 |        103 |          5 |         31 |        139 |
+| core                                                                                                                                               |          3 |        355 |         20 |         62 |        437 |
+| ui                                                                                                                                                 |          5 |      1,709 |        174 |        351 |      2,234 |
+| utils                                                                                                                                              |          3 |        187 |         22 |         45 |        254 |
++----------------------------------------------------------------------------------------------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++----------------------------------------------------------------------------------------------------------------------------------------------------+------------------+------------+------------+------------+------------+
+| filename                                                                                                                                           | language         | code       | comment    | blank      | total      |
++----------------------------------------------------------------------------------------------------------------------------------------------------+------------------+------------+------------+------------+------------+
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\README.md                    | Markdown         |         60 |          0 |         23 |         83 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\__init__.py                  | Python           |          0 |          0 |          1 |          1 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\core\__init__.py             | Python           |          0 |          0 |          1 |          1 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\core\imageSearchAlgorithm.py | Python           |         38 |          2 |          7 |         47 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\core\searchThread.py         | Python           |        317 |         18 |         54 |        389 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\main.py                      | Python           |         30 |          5 |          6 |         41 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\requirements.txt             | pip requirements |         13 |          0 |          1 |         14 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\ui\__init__.py               | Python           |          0 |          0 |          1 |          1 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\ui\imageSearchWindow.py      | Python           |        266 |         39 |         72 |        377 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\ui\mainWindow.py             | Python           |      1,209 |        131 |        230 |      1,570 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\ui\resultDetailsWindow.py    | Python           |         45 |          1 |         10 |         56 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\ui\updateDatabaseDialog.py   | Python           |        189 |          3 |         38 |        230 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\utils\__init__.py            | Python           |          0 |          0 |          1 |          1 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\utils\database.py            | Python           |        108 |          8 |         21 |        137 |
+| \\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\utils\helpers.py             | Python           |         79 |         14 |         23 |        116 |
+| Total                                                                                                                                              |                  |      2,354 |        221 |        489 |      3,064 |
++----------------------------------------------------------------------------------------------------------------------------------------------------+------------------+------------+------------+------------+------------+

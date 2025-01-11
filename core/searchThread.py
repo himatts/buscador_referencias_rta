@@ -1,4 +1,11 @@
-# BUSCADOR_REFERENCIAS_RTA/core/searchThread.py
+"""
+Módulo principal que implementa la funcionalidad de búsqueda de archivos y carpetas.
+
+Este módulo proporciona una implementación multihilo para buscar referencias y archivos
+en múltiples ubicaciones de red (NAS) y bases de datos locales. Soporta dos tipos principales
+de búsqueda: por referencia exacta y por nombre de archivo.
+"""
+
 import os
 from PyQt5.QtCore import QThread, pyqtSignal
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,6 +18,31 @@ import unicodedata
 STOPWORDS = {'de', 'la', 'el', 'y', 'en', 'a', 'por', 'para', 'con', 'sin', 'sobre'}
 
 class SearchThread(QThread):
+    """
+    Hilo de búsqueda que maneja las operaciones de búsqueda en segundo plano.
+
+    Esta clase implementa la lógica principal de búsqueda, permitiendo buscar archivos
+    y carpetas tanto por referencia exacta como por nombre de archivo. Utiliza múltiples
+    hilos para optimizar el rendimiento en búsquedas a través de la red.
+
+    Signals:
+        finished (dict): Emitida cuando la búsqueda se completa, contiene los resultados.
+        progress (float): Progreso general de la búsqueda.
+        db_progress (float): Progreso de la búsqueda en base de datos.
+        nas_progress (float): Progreso de la búsqueda en NAS.
+        directoryProcessed (int, int, str): Información sobre el directorio procesado.
+        new_result (int, str, str, str): Nuevo resultado encontrado.
+
+    Attributes:
+        text_lines (list): Lista de términos de búsqueda.
+        text_lines_indices (dict): Mapeo de términos a índices.
+        paths (list): Rutas donde buscar.
+        file_types (list): Tipos de archivo a buscar.
+        search_type (str): Tipo de búsqueda ('Referencia' o 'Nombre de Archivo').
+        max_workers (int): Número máximo de hilos concurrentes.
+        db_search_limit (int): Límite de resultados de base de datos.
+    """
+
     finished = pyqtSignal(dict)
     progress = pyqtSignal(float)
     db_progress = pyqtSignal(float)
@@ -19,21 +51,40 @@ class SearchThread(QThread):
     new_result = pyqtSignal(int, str, str, str)
 
     def __init__(self, text_lines, text_lines_indices, paths, file_types, custom_extensions=None, search_type='Referencia', max_workers=12, db_search_limit=50):
+        """
+        Inicializa el hilo de búsqueda con los parámetros especificados.
+
+        Args:
+            text_lines (list): Lista de términos de búsqueda.
+            text_lines_indices (dict): Diccionario que mapea términos a sus índices.
+            paths (list): Lista de rutas donde realizar la búsqueda.
+            file_types (list): Lista de tipos de archivo a buscar.
+            custom_extensions (list, optional): Lista de extensiones personalizadas. Por defecto None.
+            search_type (str, optional): Tipo de búsqueda ('Referencia' o 'Nombre de Archivo'). Por defecto 'Referencia'.
+            max_workers (int, optional): Número máximo de hilos concurrentes. Por defecto 12.
+            db_search_limit (int, optional): Límite de resultados de base de datos. Por defecto 50.
+        """
         super().__init__()
         self.text_lines = text_lines
         self.text_lines_indices = text_lines_indices
         self.paths = self.optimize_paths(list(set(paths)))
         self.file_types = file_types
-        self.custom_extensions = custom_extensions if custom_extensions else []  # Asegura que sea una lista
-        self.search_type = search_type  # Añadir atributo para el tipo de búsqueda
+        self.custom_extensions = custom_extensions if custom_extensions else []
+        self.search_type = search_type
         self.results = {}
         self.found_paths = set()
         self.total_directories = self.count_directories()
         self.processed_directories = 0
         self.max_workers = max_workers
-        self.db_search_limit = db_search_limit  # Limite de comparaciones en la base de datos
+        self.db_search_limit = db_search_limit
 
     def count_directories(self):
+        """
+        Cuenta el número total de directorios en las rutas especificadas.
+
+        Returns:
+            int: Número total de directorios.
+        """
         total = 0
         for path in self.paths:
             try:
@@ -43,6 +94,10 @@ class SearchThread(QThread):
         return total
 
     def run(self):
+        """
+        Método principal que inicia la búsqueda según el tipo especificado.
+        Ejecuta la búsqueda por referencia o por nombre de archivo según corresponda.
+        """
         if self.search_type == 'Referencia':
             self.run_reference_search()
         elif self.search_type == 'Nombre de Archivo':
@@ -50,6 +105,15 @@ class SearchThread(QThread):
         self.finished.emit(self.results)
 
     def run_reference_search(self):
+        """
+        Ejecuta la búsqueda por referencia.
+        
+        Este método realiza una búsqueda en dos fases:
+        1. Búsqueda en la base de datos local
+        2. Búsqueda en el sistema de archivos (NAS)
+        
+        Emite señales de progreso durante la búsqueda y nuevos resultados encontrados.
+        """
         print("Iniciando búsqueda en la base de datos (Referencia)...")
         total_db_references = len(self.text_lines)
         for idx, text_line in enumerate(self.text_lines):
@@ -102,6 +166,14 @@ class SearchThread(QThread):
                 future.result()
 
     def run_name_search(self):
+        """
+        Ejecuta la búsqueda por nombre de archivo.
+        
+        Este método realiza una búsqueda basada en el nombre del archivo o carpeta,
+        permitiendo coincidencias parciales y normalizando el texto para mejorar los resultados.
+        
+        Emite señales de progreso durante la búsqueda y nuevos resultados encontrados.
+        """
         print("Iniciando búsqueda por Nombre de Archivo...")
         
         # Búsqueda en la base de datos
@@ -162,6 +234,14 @@ class SearchThread(QThread):
         print("Finalizada la búsqueda por Nombre de Archivo.")
 
     def checkFilesAndDirs(self, root, dirs, files):
+        """
+        Verifica archivos y directorios en busca de coincidencias.
+
+        Args:
+            root (str): Ruta base del directorio actual.
+            dirs (list): Lista de subdirectorios en el directorio actual.
+            files (list): Lista de archivos en el directorio actual.
+        """
         for text_line, idx in self.text_lines_indices.items():
             if self.search_type == 'Nombre de Archivo':
                 query = text_line
@@ -237,7 +317,15 @@ class SearchThread(QThread):
                 continue  # Saltar al siguiente ciclo si es 'Referencia'
 
     def determine_file_type(self, filename):
-        """Determina el tipo de archivo basado en su extensión."""
+        """
+        Determina el tipo de archivo basado en su extensión.
+
+        Args:
+            filename (str): Nombre del archivo a analizar.
+
+        Returns:
+            str: Tipo de archivo ('Imagen', 'Video', 'PDF', etc.) o None si no se reconoce.
+        """
         ext = os.path.splitext(filename)[1].lower()
         
         # Verificar extensiones personalizadas primero
@@ -265,7 +353,15 @@ class SearchThread(QThread):
         return None
 
     def should_process_file(self, filename):
-        """Determina si un archivo debe ser procesado basado en su tipo y las opciones seleccionadas."""
+        """
+        Determina si un archivo debe ser procesado según su tipo y las opciones seleccionadas.
+
+        Args:
+            filename (str): Nombre del archivo a verificar.
+
+        Returns:
+            bool: True si el archivo debe ser procesado, False en caso contrario.
+        """
         file_type = self.determine_file_type(filename)
         
         if file_type == "Otro" and "Otro" in self.file_types:
@@ -381,6 +477,15 @@ class SearchThread(QThread):
             self.directoryProcessed.emit(self.processed_directories, self.total_directories, path)
 
     def optimize_paths(self, paths):
+        """
+        Optimiza la lista de rutas eliminando rutas redundantes.
+
+        Args:
+            paths (list): Lista de rutas a optimizar.
+
+        Returns:
+            list: Lista optimizada de rutas sin redundancias.
+        """
         optimized_paths = []
         paths = sorted(paths, key=lambda x: x.count(os.path.sep), reverse=True)
         for path in paths:

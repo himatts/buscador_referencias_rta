@@ -1,6 +1,21 @@
-# BUSCADOR_REFERENCIAS_RTA/utils/database.py
+"""
+Módulo de gestión de base de datos para el buscador de referencias.
+
+Este módulo proporciona la interfaz para interactuar con la base de datos SQLite
+que almacena información sobre las carpetas y referencias del sistema. Implementa
+funcionalidades para la creación, actualización y consulta de registros, así como
+la normalización de datos para optimizar las búsquedas.
+
+La base de datos utiliza dos tablas principales:
+1. folder_references: Almacena información sobre las carpetas y sus referencias
+2. folder_changes: Registra el historial de cambios en las carpetas
+
+Attributes:
+    DB_NAME (str): Ruta absoluta al archivo de base de datos SQLite.
+"""
 
 import datetime
+from datetime import datetime
 import sqlite3
 from contextlib import closing
 import os
@@ -9,6 +24,31 @@ from utils.helpers import normalize_text, get_significant_terms
 DB_NAME = r"\\192.168.200.250\rtadiseño\SOLUCIONES IA\BASES DE DATOS\buscador_de_referencias\folder_references.db"
 
 def initialize_db():
+    """
+    Inicializa la estructura de la base de datos.
+    
+    Crea las tablas necesarias si no existen y establece los índices
+    para optimizar las consultas. Las tablas creadas son:
+    
+    1. folder_references:
+       - id: Identificador único
+       - folder_name: Nombre normalizado de la carpeta
+       - path: Ruta única de la carpeta
+       - hash: Hash para verificación de cambios
+       - created_at: Fecha de creación
+       - last_updated: Última actualización
+       - is_deleted: Indicador de eliminación
+       - parent_path: Ruta del directorio padre
+       - total_items: Número total de elementos
+       
+    2. folder_changes:
+       - id: Identificador único
+       - folder_id: Referencia a folder_references
+       - change_type: Tipo de cambio
+       - old_path: Ruta anterior
+       - new_path: Nueva ruta
+       - changed_at: Fecha del cambio
+    """
     with closing(sqlite3.connect(DB_NAME)) as conn:
         with closing(conn.cursor()) as cur:
             # Tabla principal de carpetas
@@ -48,7 +88,20 @@ def initialize_db():
             conn.commit()
 
 def insert_folder(folder_name: str, path: str, hash_value: str, parent_path: str, total_items: int):
-    """Inserta una nueva carpeta en la base de datos."""
+    """
+    Inserta una nueva carpeta en la base de datos.
+    
+    Args:
+        folder_name (str): Nombre de la carpeta a insertar.
+        path (str): Ruta completa de la carpeta.
+        hash_value (str): Hash calculado para la carpeta.
+        parent_path (str): Ruta del directorio padre.
+        total_items (int): Número total de elementos en la carpeta.
+    
+    Note:
+        El nombre de la carpeta se normaliza antes de la inserción para
+        facilitar las búsquedas posteriores.
+    """
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     normalized_folder_name = normalize_text(folder_name)
     
@@ -69,10 +122,27 @@ def insert_folder(folder_name: str, path: str, hash_value: str, parent_path: str
             conn.commit()
 
 def get_folder(folder_name: str, selected_paths: list, limit: int = 100):
-    """Busca carpetas por nombre."""
-    normalized_selected_paths = [os.path.normpath(path).lower() for path in selected_paths]
+    """
+    Busca carpetas por nombre en las rutas seleccionadas.
     
-    # Normalizar el texto de búsqueda
+    La búsqueda se realiza utilizando términos normalizados y significativos
+    extraídos del nombre de la carpeta. Se aplican filtros adicionales basados
+    en las rutas seleccionadas.
+    
+    Args:
+        folder_name (str): Nombre o referencia a buscar.
+        selected_paths (list): Lista de rutas donde realizar la búsqueda.
+        limit (int, optional): Límite de resultados a retornar. Por defecto 100.
+    
+    Returns:
+        list: Lista de diccionarios con la información de las carpetas encontradas.
+              Cada diccionario contiene: folder_name, path, hash, last_updated, total_items.
+    
+    Example:
+        >>> get_folder("BLZ 6472", ["/ruta/principal"], 10)
+        [{'folder_name': 'blz 6472', 'path': '/ruta/principal/BLZ 6472', ...}]
+    """
+    normalized_selected_paths = [os.path.normpath(path).lower() for path in selected_paths]
     normalized_folder_name = normalize_text(folder_name)
     query_terms = get_significant_terms(normalized_folder_name)
     
@@ -81,7 +151,6 @@ def get_folder(folder_name: str, selected_paths: list, limit: int = 100):
     
     with closing(sqlite3.connect(DB_NAME)) as conn:
         with closing(conn.cursor()) as cur:
-            # Construir la cláusula WHERE con múltiples LIKE
             like_clauses = " AND ".join(["folder_name LIKE ?"] * len(query_terms))
             search_values = [f"%{term}%" for term in query_terms]
             search_values.append(limit)
@@ -112,10 +181,30 @@ def get_folder(folder_name: str, selected_paths: list, limit: int = 100):
             return filtered_results
             
 def get_db_connection():
-    """Retorna una conexión a la base de datos con un timeout configurado."""
+    """
+    Obtiene una conexión a la base de datos con timeout configurado.
+    
+    Returns:
+        sqlite3.Connection: Objeto de conexión a la base de datos.
+    
+    Note:
+        La conexión se configura con un timeout de 20 segundos para
+        manejar situaciones de concurrencia.
+    """
     return sqlite3.connect(DB_NAME, timeout=20)
 
 def normalize_existing_folders():
+    """
+    Normaliza los nombres de todas las carpetas existentes en la base de datos.
+    
+    Esta función se utiliza para actualizar registros antiguos y asegurar
+    que todos los nombres de carpetas estén normalizados según los criterios
+    actuales de búsqueda.
+    
+    Note:
+        Esta función debe ejecutarse solo una vez cuando se necesite actualizar
+        el formato de los datos existentes.
+    """
     conn = get_db_connection()
     try:
         with closing(conn.cursor()) as cur:

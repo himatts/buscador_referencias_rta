@@ -1,214 +1,303 @@
 """
-Nombre del Archivo: secondWindow.py
-Descripción: Este programa es una aplicación de escritorio construida con PyQt5 para buscar y visualizar imágenes.
-             Permite al usuario cargar una imagen de referencia, ajustar parámetros de búsqueda como el tipo de imagen
-             y el umbral de reconocimiento, y visualizar imágenes similares encontradas en una base de datos.
-             Utiliza una interfaz gráfica para facilitar la interacción con el usuario.
+Nombre del Archivo: imageSearchWindow.py
+Descripción: Este módulo implementa la interfaz gráfica para la búsqueda de imágenes por similitud.
+             Permite a los usuarios cargar una imagen de referencia y encontrar imágenes similares
+             en la base de datos utilizando algoritmos de hash perceptual.
+
+Características Principales:
+- Carga y visualización de imágenes de referencia
+- Ajuste de parámetros de búsqueda (tipo de imagen y umbral de similitud)
+- Visualización de resultados en tiempo real
+- Vista previa de imágenes encontradas
+- Interfaz dividida para mejor organización visual
+
+Clases Principales:
+- ImageViewer: Visualizador personalizado de imágenes
+- ImageSearchThread: Manejo asíncrono de búsquedas
+- MainWindow: Ventana principal de la interfaz de búsqueda
+
 Autor: RTA Muebles - Área Soluciones IA
-Fecha: 2 de Marzo de 2024
+Fecha de Última Modificación: 2 de Marzo de 2024
+Versión: 1.0
 """
-# Importaciones necesarias para el programa
-import io  # Módulo para trabajar con archivos de entrada y salida
-import os  # Módulo para interactuar con el sistema operativo
-from PyQt5 import QtCore, QtGui, QtWidgets  # Importaciones relacionadas con PyQt5
-from core.imageSearchAlgorithm import ImageSearchEngine  # Importación de la clase ImageSearchEngine del módulo image_search_engine
-from PyQt5.QtCore import QThread, pyqtSignal, QRectF, QSize  # Importaciones específicas de PyQt5
-from PIL import Image  # Importación de la clase Image del módulo PIL (Python Imaging Library)
-from PyQt5.QtGui import QImage, QPixmap, QIcon  # Importaciones específicas de PyQt5
-from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QLabel  # Importaciones específicas de PyQt5
+
+# Importaciones del sistema
+import io
+import os
+
+# Importaciones de PyQt5
+from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5.QtCore import QThread, pyqtSignal, QRectF, QSize
+from PyQt5.QtGui import QImage, QPixmap, QIcon
+from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QLabel
+
+# Importaciones locales
+from core.imageSearchAlgorithm import ImageSearchEngine
+from PIL import Image
+
 
 class ImageViewer(QGraphicsView):
     """
-    Clase para visualizar imágenes en la aplicación. Hereda de QGraphicsView para proporcionar
-    una vista interactiva de las imágenes. Permite cargar y mostrar imágenes desde una ruta de archivo.
+    Visualizador personalizado de imágenes basado en QGraphicsView.
+    
+    Esta clase proporciona una vista interactiva para mostrar imágenes, manteniendo
+    la relación de aspecto y permitiendo una visualización óptima. Se utiliza tanto
+    para mostrar la imagen de referencia como para la vista previa de resultados.
+
+    Attributes:
+        scene (QGraphicsScene): Escena que contiene la imagen a mostrar.
     """
+
     def __init__(self, parent=None):
+        """
+        Inicializa el visualizador de imágenes.
+
+        Args:
+            parent (QWidget, optional): Widget padre al que pertenece este visualizador.
+        """
         super(ImageViewer, self).__init__(parent)
-        self.scene = QGraphicsScene(self)  # Creación de una escena gráfica para la visualización de imágenes
+        self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
 
     def displayImage(self, imagePath):
         """
-        Carga y muestra una imagen desde la ruta de archivo especificada.
+        Carga y muestra una imagen en el visualizador.
+
+        Este método se encarga de cargar una imagen desde una ruta específica,
+        ajustarla a la vista manteniendo su relación de aspecto, y mostrarla
+        en la escena del visualizador.
 
         Args:
-            imagePath: Ruta al archivo de imagen que se desea mostrar.
+            imagePath (str): Ruta absoluta al archivo de imagen a mostrar.
         """
-        pixmap = QPixmap(imagePath)  # Creación de un QPixmap a partir de la ruta de la imagen
-        self.scene.clear()  # Limpieza de la escena gráfica
-        self.scene.addPixmap(pixmap)  # Agregando el QPixmap a la escena
-        # Convertir QRect a QRectF explícitamente
-        rectF = QRectF(pixmap.rect())  # Creación de un QRectF a partir del rectángulo del QPixmap
-        self.scene.setSceneRect(rectF)  # Establecimiento del rectángulo de la escena
-        self.fitInView(rectF, QtCore.Qt.KeepAspectRatio)  # Ajuste de la vista de la imagen en la escena
+        pixmap = QPixmap(imagePath)
+        self.scene.clear()
+        self.scene.addPixmap(pixmap)
+        rectF = QRectF(pixmap.rect())
+        self.scene.setSceneRect(rectF)
+        self.fitInView(rectF, QtCore.Qt.KeepAspectRatio)
 
 
 class ImageSearchThread(QThread):
     """
-    Clase para buscar imágenes similares en un hilo separado. Hereda de QThread para manejar la búsqueda de imágenes
-    sin bloquear la interfaz de usuario, emitiendo una señal cuando la búsqueda está completa con los resultados.
+    Hilo dedicado para realizar búsquedas de imágenes similares.
+
+    Esta clase maneja el proceso de búsqueda de imágenes en segundo plano,
+    evitando que la interfaz de usuario se bloquee durante búsquedas extensas.
+    Utiliza el algoritmo de hash perceptual para encontrar imágenes similares.
+
+    Signals:
+        search_started: Emitida cuando comienza la búsqueda.
+        search_finished (list): Emitida cuando la búsqueda finaliza, con la lista de resultados.
+
+    Attributes:
+        image_path (str): Ruta de la imagen de referencia.
+        threshold (float): Umbral de similitud para la búsqueda.
+        imageSearchEngine (ImageSearchEngine): Motor de búsqueda de imágenes.
     """
 
-    search_started = pyqtSignal()  # Señal para indicar que la búsqueda ha comenzado
-    search_finished = pyqtSignal(list)  # Señal para los resultados
+    search_started = pyqtSignal()
+    search_finished = pyqtSignal(list)
 
     def __init__(self, image_path, threshold, parent=None):
+        """
+        Inicializa el hilo de búsqueda.
+
+        Args:
+            image_path (str): Ruta de la imagen de referencia.
+            threshold (float): Umbral de similitud (0-20).
+            parent (QObject, optional): Objeto padre del hilo.
+        """
         super(ImageSearchThread, self).__init__(parent)
-        self.image_path = image_path  # Ruta de la imagen de referencia para la búsqueda
-        self.threshold = threshold  # Umbral de reconocimiento para la búsqueda
-        # Inicialización de la instancia de ImageSearchEngine con la ruta de la base de datos
+        self.image_path = image_path
+        self.threshold = threshold
         self.imageSearchEngine = ImageSearchEngine('//192.168.200.250/rtadiseño/SOLUCIONES IA/BASES DE DATOS/buscador_de_referencias/hashes_imagenes_muebles.db')
 
     def load_and_process_image(self, image_path):
-        # Cargar la imagen utilizando PIL
-        image = Image.open(image_path)  # Apertura de la imagen utilizando PIL
-        
-        # Aquí puedes agregar cualquier procesamiento adicional que necesites,
-        # como cambiar el tamaño de la imagen, convertirla a escala de grises, etc.
-        # Por ejemplo, para cambiar el tamaño:
-        # image = image.resize((nuevo_ancho, nuevo_alto))
-        
-        return image  # Devolución de la imagen procesada
+        """
+        Carga y procesa una imagen para su uso en la búsqueda.
+
+        Este método utiliza PIL para cargar la imagen y realizar cualquier
+        procesamiento necesario antes de la búsqueda. Actualmente solo carga
+        la imagen, pero está preparado para añadir procesamientos adicionales
+        como redimensionamiento o conversión de color.
+
+        Args:
+            image_path (str): Ruta al archivo de imagen a procesar.
+
+        Returns:
+            Image: Objeto Image de PIL con la imagen procesada.
+        """
+        image = Image.open(image_path)
+        return image
 
     def run(self):
-        self.search_started.emit()  # Emitir al inicio de la búsqueda
-        if os.path.exists(self.image_path):  # Verificación de si la ruta de la imagen existe
-            imagen_referencia = self.load_and_process_image(self.image_path)  # Carga y procesamiento de la imagen de referencia
-            # Búsqueda de imágenes similares utilizando el motor de búsqueda de imágenes
+        """
+        Ejecuta la búsqueda de imágenes similares en segundo plano.
+
+        Este método se ejecuta en un hilo separado cuando se inicia la búsqueda.
+        Emite señales al comenzar y finalizar la búsqueda, y procesa la imagen
+        de referencia para encontrar imágenes similares en la base de datos.
+        """
+        self.search_started.emit()
+        if os.path.exists(self.image_path):
+            imagen_referencia = self.load_and_process_image(self.image_path)
             resultados = self.imageSearchEngine.buscar_imagenes_similares(imagen_referencia, self.threshold)
-            self.search_finished.emit(resultados)  # Emisión de la señal con los resultados de la búsqueda
+            self.search_finished.emit(resultados)
 
 
 class MainWindow(QtWidgets.QMainWindow):
     """
-    Clase principal de la ventana de la aplicación. Configura la interfaz de usuario, manejando
-    la lógica para cargar imágenes de referencia, iniciar búsquedas de imágenes y mostrar los resultados.
-    Incluye la configuración de áreas de trabajo y vista previa, así como la conexión de señales y slots.
+    Ventana principal de la interfaz de búsqueda de imágenes.
+
+    Esta clase implementa la interfaz gráfica principal para la búsqueda de imágenes
+    por similitud. Proporciona una interfaz dividida con un área de trabajo para
+    configurar la búsqueda y un área de vista previa para visualizar resultados.
+
+    La ventana permite:
+    - Cargar imágenes de referencia
+    - Ajustar parámetros de búsqueda
+    - Visualizar resultados en tiempo real
+    - Previsualizar imágenes encontradas
+    - Gestionar múltiples búsquedas simultáneas
+
+    Attributes:
+        imageSearchEngine (ImageSearchEngine): Motor de búsqueda de imágenes.
+        image_loader_thread (QThread): Hilo para cargar imágenes.
+        imageCache (dict): Caché de imágenes cargadas.
+        activeThreads (list): Lista de hilos activos.
+        statusMessage (QLabel): Etiqueta para mostrar mensajes de estado.
     """
+
     def __init__(self):
-        super().__init__()  # Inicialización de la clase base QMainWindow
-        self.setWindowTitle("Buscador por Imágenes")  # Establecimiento del título de la ventana
+        """
+        Inicializa la ventana principal de búsqueda de imágenes.
+
+        Configura la interfaz gráfica, inicializa los componentes necesarios
+        y establece las conexiones entre señales y slots. También configura
+        el layout principal y las áreas de trabajo y vista previa.
+        """
+        super().__init__()
+        self.setWindowTitle("Buscador por Imágenes")
         icon_path = os.path.join(os.path.dirname(__file__), '../resources/icon.ico')
         self.setWindowIcon(QIcon(icon_path))
-        self.setMinimumSize(1080, 840)  # Establecimiento del tamaño mínimo de la ventana
+        self.setMinimumSize(1080, 840)
 
-        self.centralWidget = QtWidgets.QWidget(self)  # Creación de un widget central para la ventana
-        self.setCentralWidget(self.centralWidget)  # Establecimiento del widget central
+        self.centralWidget = QtWidgets.QWidget(self)
+        self.setCentralWidget(self.centralWidget)
 
-        self.mainLayout = QtWidgets.QHBoxLayout(self.centralWidget)  # Creación de un layout horizontal para la disposición principal
+        self.mainLayout = QtWidgets.QHBoxLayout(self.centralWidget)
         
-        # Definición del splitter para dividir la ventana en dos partes
-        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)  # Creación de un splitter horizontal
-        self.mainLayout.addWidget(self.splitter)  # Agregar el splitter al layout principal
+        self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.mainLayout.addWidget(self.splitter)
         
-        # Configuración de las áreas de trabajo y vista previa
-        self.setupWorkArea()  # Método para configurar el área de trabajo
-        self.setupPreviewArea()  # Método para configurar el área de vista previa
+        self.setupWorkArea()
+        self.setupPreviewArea()
 
-        # Conexión de las señales de los botones y la lista de resultados con los métodos correspondientes
         self.searchButton.clicked.connect(self.on_search_clicked)
         self.loadImageButton.clicked.connect(self.on_load_image_clicked)
         self.resultsTree.itemClicked.connect(self.on_result_selected)
 
-        # Instanciación del motor de búsqueda de imágenes y otros atributos necesarios
         self.imageSearchEngine = ImageSearchEngine('//192.168.200.250/rtadiseño/SOLUCIONES IA/BASES DE DATOS/buscador_de_referencias/hashes_imagenes_muebles.db')
-        self.image_loader_thread = None  # Inicialización del hilo de carga de imágenes
-        self.imageCache = {}  # Inicialización del caché de imágenes
+        self.image_loader_thread = None
+        self.imageCache = {}
 
-        self.statusBar = self.statusBar()  # Obtener la barra de estado de QMainWindow
-        self.statusMessage = QLabel("Listo")  # QLabel para mostrar mensajes
-        self.statusBar.addWidget(self.statusMessage)  # Añadir el QLabel a la barra de estado
+        self.statusBar = self.statusBar()
+        self.statusMessage = QLabel("Listo")
+        self.statusBar.addWidget(self.statusMessage)
 
-        self.activeThreads = []  # Lista para mantener referencias activas a los hilos
+        self.activeThreads = []
 
 
     def setupWorkArea(self):
         """
-        Configura el área de trabajo de la aplicación, incluyendo botones, etiquetas, controles deslizantes
-        y otros widgets para ajustar los parámetros de búsqueda de imágenes y cargar una imagen de referencia.
+        Configura el área de trabajo de la interfaz.
+
+        Esta área contiene los controles principales para la búsqueda:
+        - Botón para cargar imagen de referencia
+        - Selector de tipo de imagen (Ambientado/Fondo Blanco)
+        - Control deslizante para ajustar el umbral de reconocimiento
+        - Vista previa de la imagen de referencia
+        - Botón de búsqueda
+        - Barra de progreso
+        - Lista de resultados
         """
-        workArea = QtWidgets.QWidget()  # Creación de un widget para el área de trabajo
-        workArea.setMinimumSize(400, 800)  # Establecimiento del tamaño mínimo del área de trabajo
-        workLayout = QtWidgets.QVBoxLayout(workArea)  # Creación de un layout vertical para el área de trabajo
+        workArea = QtWidgets.QWidget()
+        workArea.setMinimumSize(400, 800)
+        workLayout = QtWidgets.QVBoxLayout(workArea)
 
         # Botón para cargar imagen de referencia
-        self.loadImageButton = QtWidgets.QPushButton("...")  # Creación de un botón para cargar imágenes
+        self.loadImageButton = QtWidgets.QPushButton("...")
         self.loadImageButton.setFixedHeight(30)
         self.loadImageButton.setText("Selecciona la Imagen de Referencia")
-        workLayout.addWidget(self.loadImageButton)  # Agregar el botón al layout
+        workLayout.addWidget(self.loadImageButton)
 
-        # Contenedor para el combobox y el slider
-        self.optionsContainer = QtWidgets.QWidget()  # Creación de un widget para contener el combobox y el slider
-        self.optionsLayout = QtWidgets.QHBoxLayout(self.optionsContainer)  # Creación de un layout horizontal para el contenedor
+        # Contenedor para opciones de búsqueda
+        self.optionsContainer = QtWidgets.QWidget()
+        self.optionsLayout = QtWidgets.QHBoxLayout(self.optionsContainer)
 
-        # Contenedor y layout para el selector de tipo de imagen
-        self.imageTypeContainer = QtWidgets.QWidget()  # Creación de un widget para contener el selector de tipo de imagen
-        self.imageTypeLayout = QtWidgets.QVBoxLayout(self.imageTypeContainer)  # Creación de un layout vertical para el contenedor
-        self.imageTypeLabel = QtWidgets.QLabel("Selecciona el tipo de imagen:")  # Creación de una etiqueta para el selector de tipo de imagen
-        self.imageTypeComboBox = QtWidgets.QComboBox()  # Creación de un combobox para seleccionar el tipo de imagen
-        self.imageTypeComboBox.addItems(["Ambientado", "Fondo Blanco"])  # Agregar opciones al combobox
-        self.imageTypeLayout.addWidget(self.imageTypeLabel)  # Agregar la etiqueta al layout
-        self.imageTypeLayout.addWidget(self.imageTypeComboBox)  # Agregar el combobox al layout
-        self.optionsLayout.addWidget(self.imageTypeContainer)  # Agregar el contenedor al layout principal
+        # Configuración del selector de tipo de imagen
+        self.imageTypeContainer = QtWidgets.QWidget()
+        self.imageTypeLayout = QtWidgets.QVBoxLayout(self.imageTypeContainer)
+        self.imageTypeLabel = QtWidgets.QLabel("Selecciona el tipo de imagen:")
+        self.imageTypeComboBox = QtWidgets.QComboBox()
+        self.imageTypeComboBox.addItems(["Ambientado", "Fondo Blanco"])
+        self.imageTypeLayout.addWidget(self.imageTypeLabel)
+        self.imageTypeLayout.addWidget(self.imageTypeComboBox)
+        self.optionsLayout.addWidget(self.imageTypeContainer)
 
-        # Línea vertical de separación
-        self.line = QtWidgets.QFrame()  # Creación de una línea para separación visual
-        self.line.setFrameShape(QtWidgets.QFrame.VLine)  # Establecimiento de la forma de la línea
-        self.line.setFrameShadow(QtWidgets.QFrame.Sunken)  # Establecimiento de la sombra de la línea
-        self.optionsLayout.addWidget(self.line)  # Agregar la línea al layout principal
+        # Línea separadora vertical
+        self.line = QtWidgets.QFrame()
+        self.line.setFrameShape(QtWidgets.QFrame.VLine)
+        self.line.setFrameShadow(QtWidgets.QFrame.Sunken)
+        self.optionsLayout.addWidget(self.line)
 
-        # Contenedor y layout para el slider de umbral de reconocimiento
-        self.thresholdContainer = QtWidgets.QWidget()  # Creación de un widget para contener el slider de umbral
-        self.thresholdLayout = QtWidgets.QVBoxLayout(self.thresholdContainer)  # Creación de un layout vertical para el contenedor
+        # Configuración del control de umbral
+        self.thresholdContainer = QtWidgets.QWidget()
+        self.thresholdLayout = QtWidgets.QVBoxLayout(self.thresholdContainer)
+        self.thresholdLabel = QtWidgets.QLabel("Umbral de reconocimiento: 10")
+        self.thresholdSlider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.thresholdSlider.setMinimum(0)
+        self.thresholdSlider.setMaximum(20)
+        self.thresholdSlider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.thresholdSlider.setTickInterval(1)
+        self.thresholdSlider.setValue(10)
+        self.thresholdSlider.valueChanged.connect(self.update_slider_value_label)
         
-        self.thresholdLabel = QtWidgets.QLabel("Umbral de reconocimiento: 10")  # Creación de una etiqueta para el slider de umbral
-        self.thresholdSlider = QtWidgets.QSlider(QtCore.Qt.Horizontal)  # Creación de un slider horizontal
-        self.thresholdSlider.setMinimum(0)  # Establecimiento del valor mínimo del slider
-        self.thresholdSlider.setMaximum(20)  # Establecimiento del valor máximo del slider
-        self.thresholdSlider.setTickPosition(QtWidgets.QSlider.TicksBelow)  # Establecimiento de la posición de las marcas del slider
-        self.thresholdSlider.setTickInterval(1)  # Establecimiento del intervalo entre las marcas del slider
-        self.thresholdSlider.setValue(10)  # Establecimiento del valor inicial del slider
-        self.thresholdSlider.valueChanged.connect(self.update_slider_value_label)  # Conexión de la señal del slider al método correspondiente
-        
-        self.thresholdLayout.addWidget(self.thresholdLabel)  # Agregar la etiqueta al layout
-        self.thresholdLayout.addWidget(self.thresholdSlider)  # Agregar el slider al layout
-        self.optionsLayout.addWidget(self.thresholdContainer)  # Agregar el contenedor al layout principal
+        self.thresholdLayout.addWidget(self.thresholdLabel)
+        self.thresholdLayout.addWidget(self.thresholdSlider)
+        self.optionsLayout.addWidget(self.thresholdContainer)
 
-        workLayout.addWidget(self.optionsContainer)  # Agregar el contenedor de opciones al área de trabajo
+        workLayout.addWidget(self.optionsContainer)
 
-        # ImageViewer para la imagen de referencia
-        self.referenceImageView = ImageViewer()  # Creación de un ImageViewer para mostrar la imagen de referencia
-        self.referenceImageView.setMinimumSize(200, 200)  # Establecimiento del tamaño mínimo del ImageViewer
-
-        workLayout.addWidget(self.referenceImageView)  # Agregar el ImageViewer al área de trabajo
+        # Vista previa de la imagen de referencia
+        self.referenceImageView = ImageViewer()
+        self.referenceImageView.setMinimumSize(200, 200)
+        workLayout.addWidget(self.referenceImageView)
 
         # Botón de búsqueda
-        self.searchButton = QtWidgets.QPushButton("Buscar Imagen")  # Creación de un botón para iniciar la búsqueda
-        self.searchButton.setFixedHeight(30)  # Establecimiento de la altura fija del botón
-        workLayout.addWidget(self.searchButton)  # Agregar el botón al área de trabajo
+        self.searchButton = QtWidgets.QPushButton("Buscar Imagen")
+        self.searchButton.setFixedHeight(30)
+        workLayout.addWidget(self.searchButton)
 
-        # Crear la barra de progreso
+        # Barra de progreso
         self.progressBar = QtWidgets.QProgressBar(self)
-        self.progressBar.setMaximum(1)  # Configurar el valor máximo en 1
-        self.progressBar.setValue(0)  # Establecer el valor inicial en 0
-        self.progressBar.setAlignment(QtCore.Qt.AlignCenter)  # Alinear el texto en el centro
-        self.progressBar.setTextVisible(True)  # Hacer visible el texto del progreso
-
-        # Añadir la barra de progreso al layout
+        self.progressBar.setMaximum(1)
+        self.progressBar.setValue(0)
+        self.progressBar.setAlignment(QtCore.Qt.AlignCenter)
+        self.progressBar.setTextVisible(True)
         workLayout.addWidget(self.progressBar)
 
         # Lista de resultados
-        self.resultsTree = QtWidgets.QTreeWidget()  # Creación de un QTreeWidget para mostrar los resultados de la búsqueda
-        self.resultsTree.setHeaderLabels(["Nombre de Archivo"])  # Establecimiento de la etiqueta de la cabecera
-        workLayout.addWidget(self.resultsTree)  # Agregar la lista de resultados al área de trabajo
-        # Conexión de la señal de cambio de elemento seleccionado con el método correspondiente
+        self.resultsTree = QtWidgets.QTreeWidget()
+        self.resultsTree.setHeaderLabels(["Nombre de Archivo"])
+        workLayout.addWidget(self.resultsTree)
         self.resultsTree.currentItemChanged.connect(self.on_result_selected)
 
-        self.splitter.addWidget(workArea)  # Agregar el área de trabajo al splitter
-        # Asegurar que el ancho del handle sea suficiente para ser visible.
-        self.splitter.setHandleWidth(1)  # Establecimiento del ancho del handle del splitter
+        self.splitter.addWidget(workArea)
+        self.splitter.setHandleWidth(1)
 
-        # Aplicación de un estilo específico al handle para garantizar su visibilidad.
+        # Estilo del separador
         self.splitter.setStyleSheet("""
             QSplitter::handle {
                 background-color: #C0C0C0;
@@ -220,126 +309,207 @@ class MainWindow(QtWidgets.QMainWindow):
                 background-color: #606060;
             }
         """)
-        # También puedes ajustar la propiedad de expansión de los widgets para asegurarte de que se muestre la línea divisoria.
         self.splitter.setChildrenCollapsible(False)
-
 
     def setupPreviewArea(self):
         """
-        Configura el área de vista previa dentro de la ventana principal. Crea y añade una vista de
-        ImageViewer al layout para mostrar la imagen seleccionada. También ajusta el tamaño mínimo
-        para asegurar que el área de vista previa sea adecuadamente visible.
+        Configura el área de vista previa de la interfaz.
+
+        Esta área muestra una vista ampliada de la imagen seleccionada
+        de los resultados de búsqueda. Incluye:
+        - Visualizador de imagen a tamaño completo
+        - Ajuste automático de tamaño manteniendo la relación de aspecto
         """
+        previewArea = QtWidgets.QWidget()
+        previewArea.setMinimumSize(624, 800)
+        previewLayout = QtWidgets.QVBoxLayout(previewArea)
 
-        previewArea = QtWidgets.QWidget()  # Creación de un widget para el área de vista previa
-        previewArea.setMinimumSize(624, 800)  # Establecimiento del tamaño mínimo del área de vista previa
-        previewLayout = QtWidgets.QVBoxLayout(previewArea)  # Creación de un layout vertical para el área de vista previa
+        self.resultPreviewView = ImageViewer()
+        previewLayout.addWidget(self.resultPreviewView)
 
-        # Vista previa de la imagen seleccionada
-        self.resultPreviewView = ImageViewer()  # Creación de un ImageViewer para mostrar la vista previa de la imagen
-        previewLayout.addWidget(self.resultPreviewView)  # Agregar la vista previa al layout
-
-        self.splitter.addWidget(previewArea)  # Agregar el área de vista previa al splitter
+        self.splitter.addWidget(previewArea)
 
     def on_load_image_clicked(self):
         """
-        Maneja el evento de clic en el botón de carga de imagen. Abre un cuadro de diálogo para
-        seleccionar una imagen y muestra la imagen seleccionada en el área de vista previa de referencia.
+        Maneja el evento de carga de una nueva imagen de referencia.
+
+        Abre un diálogo de selección de archivo para que el usuario elija
+        una imagen. Una vez seleccionada, la muestra en el visualizador
+        de referencia y actualiza la interfaz.
         """
-        filename, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Selecciona una imagen", "", "Images (*.png *.xpm *.jpg)")  # Mostrar el cuadro de diálogo para seleccionar una imagen
-        if filename:  # Verificar si se seleccionó un archivo
-            print(f"Imagen seleccionada: {filename}")  # Imprimir la ruta de la imagen seleccionada en la consola
-            self.display_reference_image(filename)  # Mostrar la imagen seleccionada en el área de vista previa
-        else:
-            print("No se seleccionó ninguna imagen.")  # Imprimir un mensaje si no se seleccionó ninguna imagen
+        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Selecciona una imagen",
+            "",
+            "Images (*.png *.xpm *.jpg)"
+        )
+        if filename:
+            self.display_reference_image(filename)
 
     def display_reference_image(self, path):
         """
-        Muestra la imagen de referencia seleccionada en el área de vista previa.
+        Muestra la imagen de referencia en el visualizador.
 
         Args:
-            path: Ruta del archivo de la imagen de referencia a mostrar.
+            path (str): Ruta al archivo de imagen que se mostrará como referencia.
+
+        La imagen se carga, se procesa y se muestra en el visualizador de referencia.
+        También se habilita el botón de búsqueda una vez que hay una imagen cargada.
         """
-
-        self.reference_image_path = path  # Almacenar la ruta de la imagen de referencia
-        self.referenceImageView.displayImage(path)  # Mostrar la imagen de referencia en el ImageViewer
-
-    def on_search_clicked(self):
-        """
-        Inicia la búsqueda de imágenes similares basada en la imagen de referencia y el umbral
-        de reconocimiento seleccionado. Muestra los resultados en el árbol de resultados.
-        """
-        print("Buscar imagen presionado")  # Imprimir un mensaje indicando que se ha presionado el botón de búsqueda
-        if hasattr(self, 'reference_image_path'):
-            # Si ya existe un hilo de búsqueda y está en ejecución, no iniciamos uno nuevo.
-            if hasattr(self, 'search_thread') and self.search_thread.isRunning():
-                print("La búsqueda ya está en curso. Por favor, espera a que finalice.")
-                return
-
-            # Preparar la barra de progreso para la búsqueda
-            self.progressBar.setStyleSheet("QProgressBar {color: black;}")
-            self.progressBar.setRange(0, 0)  # Indeterminado
-
-            # Crear un nuevo hilo de búsqueda
-            self.search_thread = ImageSearchThread(self.reference_image_path, self.thresholdSlider.value(), self)
-
-            # Desconectar señales previas si existen para evitar duplicidad
-            try:
-                self.search_thread.search_started.disconnect()
-                self.search_thread.search_finished.disconnect()
-            except Exception as e:
-                pass  # Ignorar si no hay señales conectadas anteriormente
-
-            # Conectar las señales del hilo de búsqueda a los slots correspondientes
-            self.search_thread.search_started.connect(self.on_search_started)
-            self.search_thread.search_finished.connect(self.on_search_finished)
-
-            # Iniciar el hilo de búsqueda
-            self.search_thread.start()
-        else:
-            print("No se ha cargado ninguna imagen de referencia.")
-
+        self.reference_image_path = path
+        self.referenceImageView.load_image(path)
+        self.searchButton.setEnabled(True)
 
     def update_slider_value_label(self, value):
         """
-        Actualiza el texto del label del slider para reflejar el valor actual del umbral de reconocimiento.
+        Actualiza la etiqueta del control deslizante con el valor actual.
 
         Args:
-            value: Valor actual del slider del umbral de reconocimiento.
+            value (int): Valor actual del control deslizante.
+
+        La etiqueta se actualiza para mostrar el valor actual del umbral
+        de reconocimiento seleccionado por el usuario.
         """
+        self.thresholdLabel.setText(f"Umbral de reconocimiento: {value}")
 
-        # Actualizar el texto del label para incluir el valor del umbral
-        self.thresholdLabel.setText(f"Umbral de reconocimiento: {value}")  # Actualizar el texto del label con el valor actual del umbral
+    def on_search_clicked(self):
+        """
+        Maneja el evento de clic en el botón de búsqueda.
 
-    def populate_results_tree(self, results):
-        print("Limpiando resultados anteriores...")
-        self.resultsTree.clear()  # Limpiar el árbol de resultados antes de llenarlo con nuevos resultados
+        Inicia el proceso de búsqueda de imágenes similares:
+        1. Deshabilita la interfaz durante la búsqueda
+        2. Crea y configura un nuevo hilo de búsqueda
+        3. Conecta las señales del hilo con los manejadores correspondientes
+        4. Inicia la búsqueda en segundo plano
+        """
+        if not hasattr(self, 'reference_image_path'):
+            return
+
+        self.disable_interface()
+        self.resultsTree.clear()
+
+        self.search_thread = ImageSearchThread(
+            self.reference_image_path,
+            self.thresholdSlider.value(),
+            self.imageTypeComboBox.currentText()
+        )
+
+        self.search_thread.started.connect(self.on_search_started)
+        self.search_thread.finished.connect(self.on_search_finished)
+        self.search_thread.progress.connect(self.update_progress)
+        self.search_thread.result_found.connect(self.add_result)
+
+        self.search_thread.start()
+
+    def disable_interface(self):
+        """
+        Deshabilita los elementos de la interfaz durante la búsqueda.
+
+        Esto incluye:
+        - Botón de carga de imagen
+        - Selector de tipo de imagen
+        - Control deslizante de umbral
+        - Botón de búsqueda
+        """
+        self.loadImageButton.setEnabled(False)
+        self.imageTypeComboBox.setEnabled(False)
+        self.thresholdSlider.setEnabled(False)
+        self.searchButton.setEnabled(False)
+
+    def enable_interface(self):
+        """
+        Habilita los elementos de la interfaz después de la búsqueda.
+
+        Esto incluye:
+        - Botón de carga de imagen
+        - Selector de tipo de imagen
+        - Control deslizante de umbral
+        - Botón de búsqueda
+        """
+        self.loadImageButton.setEnabled(True)
+        self.imageTypeComboBox.setEnabled(True)
+        self.thresholdSlider.setEnabled(True)
+        self.searchButton.setEnabled(True)
+
+    def on_search_started(self):
+        """
+        Maneja el evento de inicio de búsqueda.
+
+        Configura la barra de progreso y muestra un mensaje inicial
+        indicando que la búsqueda ha comenzado.
+        """
+        self.progressBar.setFormat("Iniciando búsqueda...")
+        self.progressBar.setValue(0)
+
+    def on_search_finished(self):
+        """
+        Maneja el evento de finalización de búsqueda.
+
+        Realiza las siguientes acciones:
+        1. Habilita nuevamente la interfaz
+        2. Actualiza la barra de progreso al 100%
+        3. Muestra un mensaje de finalización
+        4. Limpia las conexiones del hilo de búsqueda
+        """
+        self.enable_interface()
+        self.progressBar.setValue(self.progressBar.maximum())
+        self.progressBar.setFormat("Búsqueda completada")
         
-        # Ordenar los resultados por la diferencia de hash (de menor a mayor)
-        results.sort(key=lambda x: x[1])
-        
-        print(f"Agregando {len(results)} nuevos resultados...")
-        for full_path, hash_diff in results:
-            filename = os.path.basename(full_path)  # Obtener solo el nombre del archivo de la ruta completa
-            item = QtWidgets.QTreeWidgetItem(self.resultsTree)  # Crear un nuevo ítem en el árbol de resultados
-            item.setText(0, filename)  # Establecer el texto del ítem con el nombre del archivo
-            item.setData(0, QtCore.Qt.UserRole, full_path)  # Asociar la ruta completa del archivo como un dato adicional en el ítem
+        self.search_thread.started.disconnect()
+        self.search_thread.finished.disconnect()
+        self.search_thread.progress.disconnect()
+        self.search_thread.result_found.disconnect()
+        self.search_thread = None
 
-        # Opcionalmente, puedes ajustar la altura de los ítems si lo consideras necesario
-        self.resultsTree.setStyleSheet("QTreeWidget::item { height: 20px; }")
+    def update_progress(self, current, total):
+        """
+        Actualiza la barra de progreso durante la búsqueda.
 
+        Args:
+            current (int): Número de archivos procesados
+            total (int): Número total de archivos a procesar
+
+        Actualiza el valor y el texto de la barra de progreso para
+        mostrar el progreso actual de la búsqueda.
+        """
+        self.progressBar.setMaximum(total)
+        self.progressBar.setValue(current)
+        self.progressBar.setFormat(f"Procesando... {current}/{total}")
+
+    def add_result(self, path, similarity):
+        """
+        Añade un resultado a la lista de imágenes encontradas.
+
+        Args:
+            path (str): Ruta al archivo de imagen encontrado
+            similarity (float): Valor de similitud con la imagen de referencia
+
+        Crea un nuevo elemento en el árbol de resultados con la información
+        de la imagen encontrada y su porcentaje de similitud.
+        """
+        item = QtWidgets.QTreeWidgetItem(self.resultsTree)
+        filename = os.path.basename(path)
+        similarity_percentage = round((1 - similarity/20) * 100, 2)
+        item.setText(0, f"{filename} ({similarity_percentage}% similar)")
+        item.setData(0, QtCore.Qt.UserRole, path)
 
     def on_result_selected(self, current, previous):
-        if current is not None:  # Verificar si se ha seleccionado un elemento en la lista de resultados
-            full_path = current.data(0, QtCore.Qt.UserRole)  # Obtener la ruta completa del archivo desde los datos del ítem
-            print(f"Imagen seleccionada desde los resultados: {full_path}")  # Imprimir la ruta de la imagen seleccionada en la consola
+        """
+        Maneja el evento de selección de un resultado.
 
-            self.display_result_image(full_path)  # Mostrar la imagen seleccionada en resultPreviewView
+        Args:
+            current (QTreeWidgetItem): Elemento actualmente seleccionado
+            previous (QTreeWidgetItem): Elemento previamente seleccionado
 
-    def display_result_image(self, path):
-        """Muestra la imagen seleccionada en resultPreviewView."""
-        self.resultPreviewView.displayImage(path)  # Asumiendo que displayImage es un método en ImageViewer para mostrar la imagen
-
+        Cuando se selecciona un resultado en la lista, carga y muestra
+        la imagen correspondiente en el visualizador de vista previa.
+        """
+        if current is None:
+            return
+            
+        path = current.data(0, QtCore.Qt.UserRole)
+        if path:
+            self.resultPreviewView.load_image(path)
 
     def load_and_cache_image(self, path):
         # Aquí iría el código de carga y procesamiento de la imagen

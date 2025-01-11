@@ -1,0 +1,17 @@
+"filename", "language", "Python", "pip requirements", "Markdown", "comment", "blank", "total"
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\README.md", "Markdown", 0, 0, 60, 0, 23, 83
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\__init__.py", "Python", 0, 0, 0, 0, 1, 1
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\core\__init__.py", "Python", 0, 0, 0, 0, 1, 1
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\core\imageSearchAlgorithm.py", "Python", 38, 0, 0, 2, 7, 47
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\core\searchThread.py", "Python", 317, 0, 0, 18, 54, 389
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\main.py", "Python", 30, 0, 0, 5, 6, 41
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\requirements.txt", "pip requirements", 0, 13, 0, 0, 1, 14
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\ui\__init__.py", "Python", 0, 0, 0, 0, 1, 1
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\ui\imageSearchWindow.py", "Python", 266, 0, 0, 39, 72, 377
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\ui\mainWindow.py", "Python", 1209, 0, 0, 131, 230, 1570
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\ui\resultDetailsWindow.py", "Python", 45, 0, 0, 1, 10, 56
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\ui\updateDatabaseDialog.py", "Python", 189, 0, 0, 3, 38, 230
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\utils\__init__.py", "Python", 0, 0, 0, 0, 1, 1
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\utils\database.py", "Python", 108, 0, 0, 8, 21, 137
+"\\192.168.200.250\rtadiseño\SOLUCIONES IA\DESAROLLOS\proyecto_buscador_de_referencias\github\buscador_referencias_rta\utils\helpers.py", "Python", 79, 0, 0, 14, 23, 116
+"Total", "-", 2281, 13, 60, 221, 489, 3064

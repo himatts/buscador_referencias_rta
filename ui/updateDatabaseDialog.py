@@ -1,6 +1,30 @@
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QLineEdit, QPushButton, QProgressBar, QTextEdit,
-                             QMessageBox, QSizePolicy)
+"""
+Nombre del Archivo: updateDatabaseDialog.py
+Descripción: Este módulo implementa una interfaz gráfica para la actualización
+             de la base de datos del buscador de referencias. Permite ejecutar
+             y monitorear el proceso de actualización de manera segura y controlada.
+
+Características Principales:
+- Interfaz de autenticación con contraseña
+- Monitoreo en tiempo real del proceso de actualización
+- Visualización detallada del progreso mediante logs
+- Capacidad de cancelar la actualización en cualquier momento
+- Manejo seguro de procesos en segundo plano
+
+Clases Principales:
+- DatabaseUpdateThread: Manejo asíncrono del proceso de actualización
+- UpdateDatabaseDialog: Ventana de diálogo para la actualización
+
+Autor: RTA Muebles - Área Soluciones IA
+Fecha de Última Modificación: 2 de Marzo de 2024
+Versión: 1.0
+"""
+
+from PyQt5.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+    QLineEdit, QPushButton, QProgressBar, QTextEdit,
+    QMessageBox, QSizePolicy
+)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 import time
 import sys
@@ -8,28 +32,84 @@ import os
 import subprocess
 from pathlib import Path
 
+def resource_path(relative_path):
+    """
+    Obtiene la ruta absoluta al recurso, funciona tanto en desarrollo como en PyInstaller.
+
+    Esta función maneja las diferencias de rutas entre el entorno de desarrollo
+    y la aplicación empaquetada con PyInstaller.
+
+    Args:
+        relative_path (str): Ruta relativa al recurso deseado.
+
+    Returns:
+        str: Ruta absoluta al recurso.
+    """
+    try:
+        # PyInstaller crea una carpeta temporal y guarda la ruta en _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+    return os.path.join(base_path, relative_path)
+
 class DatabaseUpdateThread(QThread):
+    """
+    Hilo dedicado para ejecutar la actualización de la base de datos.
+
+    Esta clase maneja la ejecución del script de actualización en segundo plano,
+    permitiendo que la interfaz de usuario permanezca responsiva durante el proceso.
+
+    Signals:
+        progress_updated (str): Emitida cuando hay un nuevo mensaje de progreso.
+        update_completed (bool, str): Emitida cuando la actualización finaliza.
+        progress_value (int): Emitida cuando cambia el valor del progreso (0-100).
+
+    Attributes:
+        _is_cancelled (bool): Indica si el proceso ha sido cancelado.
+        process (subprocess.Popen): Proceso del script de actualización.
+    """
+    
     progress_updated = pyqtSignal(str)
     update_completed = pyqtSignal(bool, str)
     progress_value = pyqtSignal(int)
     
     def __init__(self, parent=None):
+        """
+        Inicializa el hilo de actualización.
+
+        Args:
+            parent (QObject, optional): Objeto padre del hilo.
+        """
         super().__init__(parent)
         self._is_cancelled = False
         self.process = None
         
     def run(self):
+        """
+        Ejecuta el proceso de actualización de la base de datos.
+
+        Este método:
+        1. Localiza y ejecuta el script de actualización
+        2. Monitorea la salida del proceso
+        3. Emite señales de progreso y finalización
+        4. Maneja la cancelación del proceso
+        """
         try:
-            current_dir = Path(__file__).parent.parent
-            update_script = current_dir / 'update_db.py'
+            update_script = resource_path('update_db.py')
             print(f"[DEBUG] Iniciando actualización desde: {update_script}")
-            print(f"[DEBUG] Python ejecutable: {sys.executable}")
             
+            if getattr(sys, 'frozen', False):
+                python_exe = sys.executable
+                cmd = [python_exe, '-c', f"import runpy; runpy.run_path('{update_script}')"]
+            else:
+                python_exe = sys.executable
+                cmd = [python_exe, '-u', str(update_script)]
+                
             env = os.environ.copy()
             env['PYTHONIOENCODING'] = 'utf-8'
             
             self.process = subprocess.Popen(
-                [sys.executable, '-u', str(update_script)],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -37,13 +117,12 @@ class DatabaseUpdateThread(QThread):
                 errors='replace',
                 bufsize=1,
                 universal_newlines=True,
-                env=env
+                env=env,
+                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             )
-            print(f"[DEBUG] Proceso iniciado con PID: {self.process.pid}")
             
             while True:
                 if self._is_cancelled:
-                    print("[DEBUG] Proceso cancelado por usuario")
                     if self.process:
                         self.progress_updated.emit("Cancelando actualización...")
                         self.process.terminate()
@@ -56,7 +135,6 @@ class DatabaseUpdateThread(QThread):
                     
                 line = self.process.stdout.readline()
                 if line:
-                    print(f"[DEBUG] Salida del proceso: {line.strip()}")
                     if "[PROGRESS]" in line:
                         try:
                             progress = int(line.split("[PROGRESS]")[1])
@@ -65,7 +143,6 @@ class DatabaseUpdateThread(QThread):
                             print(f"[DEBUG] Error al procesar progreso: {str(e)}")
                     self.progress_updated.emit(line.strip())
                 elif self.process.poll() is not None:
-                    print(f"[DEBUG] Proceso terminado con código: {self.process.returncode}")
                     break
             
             if not self._is_cancelled:
@@ -75,14 +152,43 @@ class DatabaseUpdateThread(QThread):
                     self.update_completed.emit(False, "Error durante la actualización")
                     
         except Exception as e:
-            print(f"[DEBUG] Error durante la actualización: {str(e)}")
             self.update_completed.emit(False, f"Error durante la actualización: {str(e)}")
     
     def cancel(self):
+        """
+        Marca el proceso para cancelación.
+        
+        La cancelación efectiva ocurrirá en el siguiente ciclo del bucle principal.
+        """
         self._is_cancelled = True
 
 class UpdateDatabaseDialog(QDialog):
+    """
+    Ventana de diálogo para la actualización de la base de datos.
+
+    Esta clase proporciona una interfaz gráfica que permite:
+    - Autenticar al usuario mediante contraseña
+    - Iniciar y monitorear el proceso de actualización
+    - Visualizar el progreso y los logs en tiempo real
+    - Cancelar la actualización si es necesario
+
+    Attributes:
+        update_thread (DatabaseUpdateThread): Hilo de actualización.
+        password_input (QLineEdit): Campo para ingresar la contraseña.
+        progress_bar (QProgressBar): Barra de progreso de la actualización.
+        log_text (QTextEdit): Área de texto para mostrar los logs.
+        start_button (QPushButton): Botón para iniciar la actualización.
+        cancel_button (QPushButton): Botón para cancelar la actualización.
+        close_button (QPushButton): Botón para cerrar la ventana.
+    """
+
     def __init__(self, parent=None):
+        """
+        Inicializa la ventana de diálogo.
+
+        Args:
+            parent (QWidget, optional): Widget padre de esta ventana.
+        """
         super().__init__(parent)
         self.setWindowTitle("Actualización de Base de Datos")
         self.setMinimumWidth(600)
@@ -90,6 +196,16 @@ class UpdateDatabaseDialog(QDialog):
         self.update_thread = None
         
     def setup_ui(self):
+        """
+        Configura la interfaz gráfica de la ventana.
+
+        Crea y organiza todos los widgets necesarios:
+        - Etiqueta informativa
+        - Campo de contraseña
+        - Barra de progreso
+        - Área de logs
+        - Botones de control
+        """
         layout = QVBoxLayout()
         
         info_label = QLabel("Este proceso actualizará la base de datos con los cambios en las carpetas monitoreadas.")
@@ -138,6 +254,14 @@ class UpdateDatabaseDialog(QDialog):
         self.close_button.clicked.connect(self.handle_close)
         
     def closeEvent(self, event):
+        """
+        Maneja el evento de cierre de la ventana.
+
+        Si hay una actualización en curso, solicita confirmación antes de cerrar.
+
+        Args:
+            event (QCloseEvent): Evento de cierre de la ventana.
+        """
         if self.update_thread and self.update_thread.isRunning():
             reply = QMessageBox.question(
                 self, 'Confirmar Cierre',
@@ -146,18 +270,26 @@ class UpdateDatabaseDialog(QDialog):
             )
             if reply == QMessageBox.Yes:
                 self.cancel_update()
-                self.update_thread.wait()  # Espera a que el hilo termine
+                self.update_thread.wait()
                 event.accept()
             else:
                 event.ignore()
         else:
             event.accept()
-
             
     def handle_close(self):
+        """Cierra la ventana de diálogo."""
         self.close()
         
     def start_update(self):
+        """
+        Inicia el proceso de actualización.
+
+        Verifica la contraseña y, si es correcta:
+        1. Deshabilita los controles apropiados
+        2. Crea y configura el hilo de actualización
+        3. Inicia el proceso de actualización
+        """
         password = self.password_input.text()
         if not self.verify_password(password):
             QMessageBox.warning(self, "Error", "Contraseña incorrecta")
@@ -179,12 +311,25 @@ class UpdateDatabaseDialog(QDialog):
         self.log_message("Iniciando actualización de la base de datos...")
             
     def cancel_update(self):
+        """
+        Cancela el proceso de actualización en curso.
+        
+        Deshabilita el botón de cancelación y solicita la cancelación
+        al hilo de actualización.
+        """
         if self.update_thread:
             self.cancel_button.setEnabled(False)
             self.log_message("Solicitando cancelación...")
             self.update_thread.cancel()
             
     def update_completed(self, success, message):
+        """
+        Maneja la finalización del proceso de actualización.
+
+        Args:
+            success (bool): True si la actualización fue exitosa, False en caso contrario.
+            message (str): Mensaje describiendo el resultado de la actualización.
+        """
         self.log_message(message)
         self.progress_bar.setValue(100 if success else 0)
         
@@ -199,12 +344,26 @@ class UpdateDatabaseDialog(QDialog):
             QMessageBox.warning(self, "Error", message)
             
     def log_message(self, message):
+        """
+        Añade un mensaje al área de logs.
+
+        Args:
+            message (str): Mensaje a añadir al log.
+        """
         self.log_text.append(f"{time.strftime('%H:%M:%S')} - {message}")
         self.log_text.verticalScrollBar().setValue(
             self.log_text.verticalScrollBar().maximum()
         )
 
     def verify_password(self, password):
-        """Verifica si la contraseña ingresada es correcta."""
+        """
+        Verifica si la contraseña ingresada es correcta.
+
+        Args:
+            password (str): Contraseña ingresada por el usuario.
+
+        Returns:
+            bool: True si la contraseña es correcta, False en caso contrario.
+        """
         correct_password = "RTA2024"
         return password == correct_password

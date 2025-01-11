@@ -1,4 +1,11 @@
-# BUSCADOR_REFERENCIAS_RTA/utils/helpers.py
+"""
+Módulo de funciones auxiliares para el buscador de referencias.
+
+Este módulo proporciona un conjunto de funciones utilitarias para el procesamiento
+de texto, normalización, extracción de referencias y comparación de cadenas.
+Las funciones aquí implementadas son utilizadas por los módulos principales
+para realizar búsquedas precisas y manejar diferentes formatos de texto.
+"""
 
 import os
 import re
@@ -9,81 +16,109 @@ import unicodedata
 STOPWORDS = {'de', 'la', 'el', 'y', 'en', 'a', 'por', 'para', 'con', 'sin', 'sobre'}
 
 def extract_reference(text):
-    # Extrae las primeras tres letras y los números siguientes, ignorando el resto del texto
+    """
+    Extrae el código de referencia de un texto dado.
+    
+    Busca un patrón que consiste en tres letras seguidas de 3-5 números,
+    ignorando espacios y el resto del texto.
+    
+    Args:
+        text (str): Texto del cual extraer la referencia.
+    
+    Returns:
+        str or None: Referencia extraída en formato 'XXX YYYYY' o None si no se encuentra.
+    
+    Example:
+        >>> extract_reference("BLZ 6472 - Ejemplo")
+        'BLZ 6472'
+    """
     match = re.search(r'([A-Z]{3})\s*(\d{3,5})', text, re.IGNORECASE)
     if match:
         return f"{match.group(1).upper()} {match.group(2)}"
     return None
 
-
 def normalize_text(text):
     """
     Normaliza el texto eliminando acentos, caracteres especiales y convirtiéndolo a minúsculas.
+    
+    El proceso de normalización incluye:
+    1. Conversión a minúsculas
+    2. Eliminación de acentos y diacríticos
+    3. Reemplazo de caracteres especiales por espacios
+    4. Eliminación de otros caracteres no alfanuméricos
+    5. Normalización de espacios múltiples
     
     Args:
         text (str): Texto a normalizar.
     
     Returns:
         str: Texto normalizado.
-    """
-    # Convertir a minúsculas primero
-    text = text.lower()
     
-    # Normalizar caracteres Unicode (eliminar acentos)
+    Example:
+        >>> normalize_text("BLZ-6472_Ejemplo")
+        'blz 6472 ejemplo'
+    """
+    text = text.lower()
     text = unicodedata.normalize('NFKD', text)
     text = ''.join([c for c in text if not unicodedata.combining(c)])
-    
-    # Reemplazar caracteres especiales con espacios
     text = re.sub(r'[+_\-.]', ' ', text)
-    
-    # Eliminar otros caracteres especiales
     text = re.sub(r'[^a-z0-9\s]', '', text)
-    
-    # Normalizar espacios múltiples
     text = ' '.join(text.split())
-    
     return text.strip()
     
 def get_significant_terms(query):
     """
     Obtiene los términos significativos de una consulta, ignorando las stopwords.
-    Los términos se normalizan y se filtran para eliminar términos vacíos.
+    
+    Los términos se normalizan y se filtran para eliminar términos vacíos y palabras comunes
+    que no aportan significado a la búsqueda.
     
     Args:
         query (str): Consulta de búsqueda.
     
     Returns:
-        list: Lista de términos significativos.
+        list: Lista de términos significativos normalizados.
+    
+    Example:
+        >>> get_significant_terms("Mesa de Comedor")
+        ['mesa', 'comedor']
     """
     normalized_query = normalize_text(query)
-    # Dividir por espacios y filtrar stopwords y términos vacíos
     terms = [term.strip() for term in normalized_query.split() if term.strip()]
     return [term for term in terms if term not in STOPWORDS and len(term) > 1]
-
 
 def is_exact_match(search_reference, text):
     """
     Verifica si hay una coincidencia exacta entre la referencia de búsqueda y el texto.
-    Ahora maneja tanto referencias como nombres de archivo.
+    
+    La función realiza dos tipos de comparación:
+    1. Comparación de referencias extraídas (si existen)
+    2. Comparación de textos normalizados completos
+    
+    Args:
+        search_reference (str): Referencia o texto de búsqueda.
+        text (str): Texto con el que comparar.
+    
+    Returns:
+        bool: True si hay coincidencia exacta, False en caso contrario.
+    
+    Example:
+        >>> is_exact_match("BLZ 6472", "BLZ-6472-ejemplo")
+        True
     """
-    # Primero intentamos extraer y comparar referencias
     extracted_search_ref = extract_reference(search_reference)
     extracted_text_ref = extract_reference(text)
     
     if extracted_search_ref and extracted_text_ref:
-        # Si ambos textos contienen referencias, las comparamos
         normalized_search_ref = normalize_text(extracted_search_ref)
         normalized_text_ref = normalize_text(extracted_text_ref)
         if normalized_search_ref == normalized_text_ref:
             print(f"Coincidencia exacta de referencia encontrada: {normalized_search_ref} == {normalized_text_ref}")
             return True
     
-    # Si no hay coincidencia por referencia o no son referencias,
-    # comparamos los textos normalizados completos
     normalized_search = normalize_text(search_reference)
     normalized_text = normalize_text(text)
     
-    # Verificar si el texto normalizado de búsqueda está contenido en el texto normalizado
     if normalized_search in normalized_text:
         print(f"Coincidencia exacta de texto encontrada: {normalized_search} en {normalized_text}")
         return True
@@ -91,6 +126,21 @@ def is_exact_match(search_reference, text):
     return False
 
 def is_ficha_tecnica(search_reference, text):
+    """
+    Verifica si un texto corresponde a una ficha técnica de una referencia específica.
+    
+    La función busca coincidencias entre la referencia y el texto, considerando:
+    1. La presencia de "ficha técnica" en el texto
+    2. La coincidencia de la referencia completa o sus partes
+    3. Similitud aproximada usando SequenceMatcher
+    
+    Args:
+        search_reference (str): Referencia a buscar.
+        text (str): Texto a analizar.
+    
+    Returns:
+        bool: True si el texto corresponde a una ficha técnica de la referencia, False en caso contrario.
+    """
     ref = extract_reference(search_reference)
     if not ref:
         return False
@@ -106,6 +156,17 @@ def is_ficha_tecnica(search_reference, text):
     return False
 
 def search_references(reference, results, selected_paths):
+    """
+    Busca referencias en los resultados que coincidan con las rutas seleccionadas.
+    
+    Args:
+        reference (str): Referencia a buscar.
+        results (list): Lista de resultados de la base de datos.
+        selected_paths (list): Lista de rutas seleccionadas para la búsqueda.
+    
+    Returns:
+        list: Lista filtrada de resultados que coinciden con la referencia y las rutas.
+    """
     normalized_selected_paths = [os.path.normpath(path).lower() for path in selected_paths]
     filtered_results = []
     for result in results:
