@@ -98,43 +98,70 @@ class App(QMainWindow):
         self.button_style = """
             QPushButton {
                 min-height: 20px;
-                padding: 5px 10px;
+                padding: 5px;
                 border: 1px solid #ccc;
-                border-radius: 4px;
-                background-color: #f8f9fa;
+                border-radius: 3px;
+                background-color: #f0f0f0;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
             }
             QPushButton:checked {
                 background-color: #007bff;
                 color: white;
-                border-color: #0056b3;
-            }
-            QPushButton:hover {
-                background-color: #e9ecef;
-            }
-            QPushButton:checked:hover {
-                background-color: #0069d9;
+                border: 1px solid #0056b3;
             }
         """
 
+        # Botones de tipo de búsqueda
         self.button_referencia = QPushButton("Referencia")
         self.button_nombre = QPushButton("Nombre de Archivo")
-        self.search_image_button = QPushButton("Buscar con Imagen")
-
+        self.button_folder_creation = QPushButton("Referencias con creación de carpeta")
+        
+        # Botón de configuración
+        self.config_button = QPushButton()
+        self.config_button.setIcon(QApplication.style().standardIcon(QApplication.style().SP_FileDialogDetailedView))
+        self.config_button.setIconSize(QSize(20, 20))
+        self.config_button.setFixedSize(32, 32)
+        self.config_button.setToolTip("Configuración")
+        self.config_button.setStyleSheet("""
+            QPushButton {
+                padding: 3px;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                background-color: #f8f9fa;
+            }
+            QPushButton:hover {
+                background-color: #e9ecef;
+                border-color: #0056b3;
+            }
+        """)
+        
+        # Configurar botones como checkables
         self.button_referencia.setCheckable(True)
         self.button_nombre.setCheckable(True)
-        self.button_referencia.setChecked(True)
-
+        self.button_folder_creation.setCheckable(True)
+        
+        # Aplicar estilo
         self.button_referencia.setStyleSheet(self.button_style)
         self.button_nombre.setStyleSheet(self.button_style)
-        self.search_image_button.setStyleSheet(self.button_style)
-
+        self.button_folder_creation.setStyleSheet(self.button_style)
+        
+        # Agregar botones al layout en dos filas
         search_type_layout.addWidget(self.button_referencia, 0, 0)
         search_type_layout.addWidget(self.button_nombre, 0, 1)
-        search_type_layout.addWidget(self.search_image_button, 0, 2)
-
+        search_type_layout.addWidget(self.button_folder_creation, 1, 0, 1, 2)  # Span 2 columns
+        search_type_layout.addWidget(self.config_button, 1, 2)  # En la segunda fila
+        
+        # Configurar stretch factors y espaciado
         search_type_layout.setColumnStretch(0, 1)
         search_type_layout.setColumnStretch(1, 1)
-        search_type_layout.setColumnStretch(2, 1)
+        search_type_layout.setColumnStretch(2, 0)  # Menos espacio para el botón de configuración
+        search_type_layout.setVerticalSpacing(10)  # Añadir espacio vertical entre filas
+        search_type_layout.setHorizontalSpacing(10)  # Añadir espacio horizontal entre columnas
+        
+        # Activar botón de referencia por defecto
+        self.button_referencia.setChecked(True)
 
         search_type_group.setLayout(search_type_layout)
         left_column_layout.addWidget(search_type_group)
@@ -397,7 +424,7 @@ class App(QMainWindow):
         self.frame.hide()
 
     def setup_connections(self):
-        """Configura las conexiones de señales."""
+        """Configura las conexiones de señales y slots."""
         # Conexiones de botones principales
         self.paste_button.clicked.connect(self.controller.handle_paste)
         self.delete_button.clicked.connect(self.controller.delete_selected)
@@ -411,7 +438,12 @@ class App(QMainWindow):
         self.button_nombre.clicked.connect(
             lambda: self.controller.toggle_search_buttons(self.button_nombre)
         )
-        self.search_image_button.clicked.connect(self.open_image_search_window)
+        self.button_folder_creation.clicked.connect(
+            lambda: self.controller.toggle_search_buttons(self.button_folder_creation)
+        )
+        
+        # Conexión del botón de configuración
+        self.config_button.clicked.connect(self.controller.show_config_dialog)
         
         # Conexiones de tipos de archivo
         self.btn_folders.clicked.connect(self.controller.paths_manager.update_paths_from_buttons)
@@ -449,6 +481,9 @@ class App(QMainWindow):
         otro_button = self.default_paths_buttons_widgets.get("Otro")
         if otro_button:
             otro_button.clicked.connect(self.handle_otro_button_click)
+            
+        # Actualizar rutas iniciales
+        self.controller.paths_manager.update_paths_from_buttons()
 
     def handle_item_clicked(self, item, column):
         """Maneja el evento de clic en un ítem de la tabla de resultados."""
@@ -487,15 +522,14 @@ class App(QMainWindow):
     def updateButtonTextsAndLabels(self):
         """Actualiza los textos de los botones y etiquetas según el tipo de búsqueda."""
         if self.search_type == 'Referencia':
-            self.button_referencia.setChecked(True)
-            self.button_nombre.setChecked(False)
             self.copy_found_button.setText("Copiar REF encontradas")
             self.copy_not_found_button.setText("Copiar REF no encontradas")
-        else:
-            self.button_referencia.setChecked(False)
-            self.button_nombre.setChecked(True)
+        elif self.search_type == 'Nombre de Archivo':
             self.copy_found_button.setText("Copiar nombres encontrados")
             self.copy_not_found_button.setText("Copiar nombres no encontrados")
+        elif self.search_type == 'FolderCreation':
+            self.copy_found_button.setText("Copiar REF encontradas")
+            self.copy_not_found_button.setText("Copiar REF no encontradas")
 
     def handle_otro_button_click(self):
         """Maneja el clic en el botón 'Otro' de rutas personalizadas."""

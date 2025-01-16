@@ -19,6 +19,10 @@ from managers.searchController import SearchController
 from managers.fileManager import FileManager
 from managers.pathsManager import PathsManager
 from managers.resultsManager import ResultsManager
+from managers.referenceFolderCreationManager import ReferenceFolderCreationManager
+from utils.config import Config
+from ui.configDialog import ConfigDialog
+import os
 
 class MainWindowController(QObject):
     """
@@ -26,13 +30,6 @@ class MainWindowController(QObject):
     
     Esta clase actúa como intermediario entre la interfaz de usuario y los diferentes
     managers que manejan funcionalidades específicas.
-    
-    Attributes:
-        main_window: Referencia a la ventana principal
-        search_controller: Controlador de búsquedas
-        file_manager: Manejador de operaciones con archivos
-        paths_manager: Manejador de rutas
-        results_manager: Manejador de resultados
     """
     
     def __init__(self, main_window):
@@ -49,13 +46,191 @@ class MainWindowController(QObject):
         self.paths_manager = PathsManager(self)
         self.results_manager = ResultsManager(self)
         
+        # Configuración
+        self.config = Config()
+        
+        # Configuración del gestor de creación de carpetas
+        self.folder_creation_manager = None
+        
         # Estado de la aplicación
         self.is_searching = False
         self.found_refs = set()
         self.searched_refs = set()
         self.action_history = []
         self.custom_extensions = []
-        
+
+    def show_config_dialog(self):
+        """Muestra el diálogo de configuración."""
+        dialog = ConfigDialog(self.main_window)
+        dialog.exec_()
+
+    def execute_folder_creation_mode(self):
+        """
+        Ejecuta el modo de creación de carpetas siguiendo el flujo:
+        1. Buscar en base de datos
+        2. Mostrar resultados
+        3. Buscar en Google Sheets
+        4. Formatear referencias
+        5. Crear carpetas
+        6. Copiar archivos
+        """
+        try:
+            # 1. Obtener referencias de la tabla
+            references = []
+            entry = self.main_window.entry
+            for i in range(entry.rowCount()):
+                item = entry.item(i, 0)
+                if item and item.text().strip():
+                    references.append(item.text().strip())
+
+            if not references:
+                QMessageBox.warning(
+                    self.main_window,
+                    "Atención",
+                    "No hay referencias ingresadas."
+                )
+                return
+
+            # 2. Verificar configuración
+            config = self.config
+            credentials_path = config.get_google_credentials_path()
+            sheet_key = config.get_google_sheet_key()
+
+            if not credentials_path or not sheet_key:
+                QMessageBox.warning(
+                    self.main_window,
+                    "Configuración Incompleta",
+                    "Por favor, configure las credenciales de Google Sheets primero."
+                )
+                self.show_config_dialog()
+                return
+
+            # 3. Crear manager si no existe
+            if (not self.folder_creation_manager or 
+                self.folder_creation_manager.google_credentials_path != credentials_path or
+                self.folder_creation_manager.google_sheet_key != sheet_key):
+                
+                self.folder_creation_manager = ReferenceFolderCreationManager(
+                    google_credentials_path=credentials_path,
+                    google_sheet_key=sheet_key,
+                    desktop_folder_name=config.get_desktop_folder_name()
+                )
+
+            # 4. PRIMER PASO: Buscar en base de datos
+            self.main_window.status_label.setText("Buscando referencias en la base de datos...")
+            db_results = self.folder_creation_manager.search_in_database_only(references)
+
+            # 5. Mostrar resultados de la base de datos
+            self.main_window.results.clear()
+            found_count = 0
+            not_found = []
+
+            for ref, paths in db_results.items():
+                if paths:
+                    found_count += 1
+                    # Mostrar cada ruta encontrada
+                    for path in paths:
+                        file_type = "Carpeta" if os.path.isdir(path) else "Archivo"
+                        self.results_manager._add_reference_result(
+                            found_count - 1,
+                            path,
+                            file_type,
+                            ref
+                        )
+                else:
+                    not_found.append(ref)
+
+            # Actualizar etiquetas y contadores
+            self.main_window.ref_info_label.setText(
+                f"Referencias encontradas: {found_count} | No encontradas: {len(not_found)}"
+            )
+
+            # 6. Confirmar continuación
+            if not_found:
+                msg = "Las siguientes referencias no se encontraron en la base de datos:\n\n"
+                msg += "\n".join(not_found)
+                msg += "\n\n¿Desea continuar con el proceso de creación de carpetas?"
+            else:
+                msg = "Todas las referencias fueron encontradas en la base de datos.\n"
+                msg += "¿Desea continuar con el proceso de creación de carpetas?"
+
+            if QMessageBox.question(
+                self.main_window,
+                "Continuar Proceso",
+                msg,
+                QMessageBox.Yes | QMessageBox.No
+            ) != QMessageBox.Yes:
+                return
+
+            # 7. SEGUNDO PASO: Buscar en Google Sheets y formatear
+            self.main_window.status_label.setText("Obteniendo información de Google Sheets...")
+            formatted_refs = self.folder_creation_manager.fetch_and_format_with_sheets(references)
+
+            # 8. Actualizar tabla de contenido con nombres formateados
+            for ref_data in formatted_refs:
+                if 'error' not in ref_data:
+                    # Buscar la referencia original en la tabla y actualizarla
+                    for row in range(entry.rowCount()):
+                        item = entry.item(row, 0)
+                        if item and item.text().strip() == ref_data['original']:
+                            item.setText(ref_data['nombre_formateado'])
+                            break
+
+            # 9. TERCER PASO: Crear carpetas y copiar archivos
+            self.main_window.status_label.setText("Creando carpetas y copiando archivos...")
+            results = self.folder_creation_manager.create_folders_and_copy_files(
+                formatted_refs,
+                db_results
+            )
+
+            # 10. Mostrar resumen final
+            processed = len(results["processed"])
+            errors = len(results["errors"])
+            
+            msg = f"Proceso completado:\n\n"
+            msg += f"Referencias procesadas exitosamente: {processed}\n"
+            if errors > 0:
+                msg += f"Errores encontrados: {errors}\n\n"
+                msg += "Detalles de errores:\n"
+                for error in results["errors"]:
+                    msg += f"- {error}\n"
+            
+            if processed > 0:
+                msg += "\nDetalles de carpetas creadas:\n"
+                for ref in results["processed"]:
+                    msg += f"\n{ref['original']}:\n"
+                    msg += f"  Carpeta: {ref['target_folder']}\n"
+                    if ref['copied_files'].get('pdf'):
+                        msg += f"  PDF: {ref['copied_files']['pdf']}\n"
+                    if ref['copied_files'].get('rhino'):
+                        msg += f"  Rhino: {ref['copied_files']['rhino']}\n"
+            
+            QMessageBox.information(
+                self.main_window,
+                "Resultado del Proceso",
+                msg
+            )
+            
+            self.main_window.status_label.setText("Proceso completado.")
+            
+        except Exception as e:
+            # Si hay error de autenticación, reiniciar el manager
+            if "Error en autenticación con Google Sheets" in str(e):
+                self.folder_creation_manager = None
+                QMessageBox.critical(
+                    self.main_window,
+                    "Error de Autenticación",
+                    "Las credenciales de Google Sheets no son válidas.\n"
+                    "Por favor, configure nuevamente las credenciales."
+                )
+            else:
+                QMessageBox.critical(
+                    self.main_window,
+                    "Error",
+                    f"Error durante el proceso:\n{str(e)}"
+                )
+            self.main_window.status_label.setText("Error en el proceso.")
+
     def handle_paste(self):
         """Maneja la acción de pegar desde el portapapeles."""
         clipboard = QApplication.clipboard()
@@ -169,23 +344,43 @@ class MainWindowController(QObject):
         Args:
             button: Botón que fue presionado
         """
+        # Desmarcamos todos los botones excepto el presionado
+        buttons = [
+            self.main_window.button_referencia,
+            self.main_window.button_nombre,
+            self.main_window.button_folder_creation
+        ]
+        
+        for btn in buttons:
+            if btn != button:
+                btn.setChecked(False)
+        
+        # Aseguramos que el botón presionado esté marcado
+        button.setChecked(True)
+        
+        # Actualizamos el tipo de búsqueda
         if button == self.main_window.button_referencia:
-            self.main_window.button_nombre.setChecked(False)
             self.main_window.search_type = 'Referencia'
         elif button == self.main_window.button_nombre:
-            self.main_window.button_referencia.setChecked(False)
             self.main_window.search_type = 'Nombre de Archivo'
-            
+        elif button == self.main_window.button_folder_creation:
+            self.main_window.search_type = 'FolderCreation'
+        
         self.main_window.updateButtonTextsAndLabels()
         self.results_manager.update_results_headers()
         self.main_window.results.clear()
         
     def handle_search(self):
-        """Maneja el inicio o detención de la búsqueda."""
-        if not self.is_searching:
-            self.start_search()
+        """
+        Maneja el inicio o detención de la búsqueda según el tipo seleccionado.
+        """
+        if self.main_window.search_type == 'FolderCreation':
+            self.execute_folder_creation_mode()
         else:
-            self.stop_search()
+            if not self.is_searching:
+                self.start_search()
+            else:
+                self.stop_search()
             
     def start_search(self):
         """Inicia el proceso de búsqueda."""

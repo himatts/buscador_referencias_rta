@@ -11,3 +11,13 @@ PyQt5==5.15.10
   - PyQt5-Qt5 [required: >=5.15.2, installed: 5.15.2]
   - PyQt5-sip [required: >=12.13,<13, installed: 12.13.0]
 setuptools==65.5.0
+
+# Dependencias para Google Sheets
+gspread==5.12.3
+google-auth==2.27.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+
+# Dependencias para LLM
+openai>=1.0.0
+python-dotenv>=1.0.0
