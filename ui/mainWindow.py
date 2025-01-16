@@ -16,7 +16,8 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QApplication, QFileDialog,
     QCheckBox, QLabel, QProgressBar, QMessageBox, QAbstractItemView,
     QTreeWidgetItem, QTreeWidget, QHeaderView, QSizePolicy, QMenu, QSplashScreen,
-    QGroupBox, QRadioButton, QLineEdit, QCommandLinkButton, QFrame, QButtonGroup
+    QGroupBox, QRadioButton, QLineEdit, QCommandLinkButton, QFrame, QButtonGroup,
+    QSplitter
 )
 from PyQt5.QtCore import Qt, QEvent, QUrl, QSize
 from PyQt5.QtGui import (
@@ -26,6 +27,7 @@ from PyQt5.QtGui import (
 from ui.imageSearchWindow import MainWindow as ImageSearchWindow
 from ui.resultDetailsWindow import ResultDetailsWindow
 from ui.updateDatabaseDialog import UpdateDatabaseDialog
+from ui.chatPanel import ChatPanel
 
 def resource_path(relative_path):
     """
@@ -86,9 +88,33 @@ class App(QMainWindow):
         # Layout principal dividido en dos columnas
         main_layout = QHBoxLayout(central_widget)
         left_column_layout = QVBoxLayout()
-        right_column_layout = QVBoxLayout()
+        right_column_widget = QWidget()
+        right_column_layout = QVBoxLayout(right_column_widget)
+        
+        # Splitter para la columna derecha
+        self.right_splitter = QSplitter(Qt.Horizontal)
+        self.right_splitter.setChildrenCollapsible(False)
+        
+        # Widget principal de la columna derecha
+        self.main_right_widget = QWidget()
+        self.main_right_layout = QVBoxLayout(self.main_right_widget)
+        
+        # Panel de chat
+        self.chat_panel = ChatPanel()
+        self.chat_panel.hide()  # Oculto por defecto
+        
+        # Agregar widgets al splitter
+        self.right_splitter.addWidget(self.main_right_widget)
+        self.right_splitter.addWidget(self.chat_panel)
+        
+        # Configurar proporciones del splitter
+        self.right_splitter.setStretchFactor(0, 70)  # 70% para el contenido principal
+        self.right_splitter.setStretchFactor(1, 30)  # 30% para el chat
+        
+        right_column_layout.addWidget(self.right_splitter)
+        
         main_layout.addLayout(left_column_layout, 35)
-        main_layout.addLayout(right_column_layout, 65)
+        main_layout.addWidget(right_column_widget, 65)
 
         # 1.1 Selección del Tipo de Búsqueda
         search_type_group = QGroupBox("Seleccione el tipo de búsqueda:")
@@ -281,7 +307,7 @@ class App(QMainWindow):
         self.generate_button = QPushButton("Buscar")
         self.generate_button.setFixedHeight(50)
         self.generate_button.setStyleSheet(self.button_style)
-        right_column_layout.addWidget(self.generate_button)
+        self.main_right_layout.addWidget(self.generate_button)
 
         # 2.2 Barras de Progreso
         self.db_progress_bar = QProgressBar(self)
@@ -299,7 +325,7 @@ class App(QMainWindow):
         progress_layout = QVBoxLayout()
         progress_layout.addWidget(self.db_progress_bar)
         progress_layout.addWidget(self.nas_progress_bar)
-        right_column_layout.addLayout(progress_layout)
+        self.main_right_layout.addLayout(progress_layout)
 
         # 2.3 Tabla de Resultados
         self.results = QTreeWidget()
@@ -311,7 +337,7 @@ class App(QMainWindow):
 
         self.results.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.results.setHeaderLabels(['', 'ID', 'REF', '###', 'TIPO', 'NOMBRE DE ARCHIVO', 'RUTA'])
-        right_column_layout.addWidget(self.results)
+        self.main_right_layout.addWidget(self.results)
 
         self.results.setColumnWidth(0, 40)
         self.results.setColumnWidth(1, 15)
@@ -329,20 +355,20 @@ class App(QMainWindow):
         # 2.4 Botones de Acción
         self.checkBox_seleccionar_todos = QCheckBox("Seleccionar todos los resultados")
         self.checkBox_seleccionar_todos.setTristate(True)
-        right_column_layout.addWidget(self.checkBox_seleccionar_todos)
+        self.main_right_layout.addWidget(self.checkBox_seleccionar_todos)
 
         self.ref_info_label = QLabel("")
         self.ref_info_label.setAlignment(Qt.AlignCenter)
         self.ref_info_label.setStyleSheet("font-weight: bold;")
-        right_column_layout.addWidget(self.ref_info_label)
+        self.main_right_layout.addWidget(self.ref_info_label)
 
         self.show_details_button = QPushButton("Mostrar detalles de resultados")
         self.show_details_button.setFixedHeight(30)
         self.show_details_button.setStyleSheet(self.button_style)
-        right_column_layout.addWidget(self.show_details_button)
+        self.main_right_layout.addWidget(self.show_details_button)
 
         self.selectedCountLabel = QLabel("Elementos seleccionados: 0")
-        right_column_layout.addWidget(self.selectedCountLabel)
+        self.main_right_layout.addWidget(self.selectedCountLabel)
 
         self.status_label = QLabel("Listo")
         self.status_label.setAlignment(Qt.AlignLeft)
@@ -357,11 +383,11 @@ class App(QMainWindow):
                 padding: 2px;
             }
         """)
-        right_column_layout.addWidget(self.status_label)
+        self.main_right_layout.addWidget(self.status_label)
 
         # Botones para copiar referencias
         copy_buttons_layout = QHBoxLayout()
-        right_column_layout.addLayout(copy_buttons_layout)
+        self.main_right_layout.addLayout(copy_buttons_layout)
 
         self.copy_found_button = QPushButton("Copiar REF encontradas")
         self.copy_found_button.setFixedHeight(30)
@@ -377,7 +403,7 @@ class App(QMainWindow):
 
         # 2.5 Controles Finales
         bottom_buttons_layout = QHBoxLayout()
-        right_column_layout.addLayout(bottom_buttons_layout)
+        self.main_right_layout.addLayout(bottom_buttons_layout)
 
         self.open_selected_button = QPushButton("Abrir Selección")
         self.open_selected_button.setFixedHeight(30)
@@ -410,7 +436,7 @@ class App(QMainWindow):
                 border-color: #d0d0d0;
             }
         """)
-        right_column_layout.addWidget(self.update_db_button, 0, Qt.AlignRight)
+        self.main_right_layout.addWidget(self.update_db_button, 0, Qt.AlignRight)
 
         # Frame para estado de búsqueda
         self.frame = QFrame()
@@ -420,7 +446,7 @@ class App(QMainWindow):
         self.label_busqueda = QLabel("Buscando...")
         frame_layout.addWidget(self.label_busqueda)
         self.frame.setLayout(frame_layout)
-        right_column_layout.addWidget(self.frame)
+        self.main_right_layout.addWidget(self.frame)
         self.frame.hide()
 
     def setup_connections(self):
@@ -439,7 +465,7 @@ class App(QMainWindow):
             lambda: self.controller.toggle_search_buttons(self.button_nombre)
         )
         self.button_folder_creation.clicked.connect(
-            lambda: self.controller.toggle_search_buttons(self.button_folder_creation)
+            lambda: self.toggle_folder_creation_mode(self.button_folder_creation)
         )
         
         # Conexión del botón de configuración
@@ -549,3 +575,11 @@ class App(QMainWindow):
                         subitem = item.layout().takeAt(0)
                         if subitem.widget():
                             subitem.widget().deleteLater()
+
+    def toggle_folder_creation_mode(self, button):
+        """
+        Maneja el cambio al modo de creación de carpetas.
+        Muestra u oculta el panel de chat según corresponda.
+        """
+        self.controller.toggle_search_buttons(button)
+        self.chat_panel.setVisible(button.isChecked())

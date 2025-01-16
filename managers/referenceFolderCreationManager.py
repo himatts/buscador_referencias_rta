@@ -175,7 +175,7 @@ class ReferenceFolderCreationManager:
         Args:
             formatted_refs: Lista de referencias formateadas
             db_results: Diccionario con rutas de la base de datos
-
+        
         Returns:
             Dict con resultados del proceso
         """
@@ -192,7 +192,6 @@ class ReferenceFolderCreationManager:
                     
                 original_ref = ref_data['original']
                 final_name = ref_data['nombre_formateado']
-                category = ref_data['category']
                 
                 # Obtener ruta de la base de datos
                 source_paths = db_results.get(original_ref, [])
@@ -202,6 +201,10 @@ class ReferenceFolderCreationManager:
                 
                 # Usar la primera ruta (ya ordenada por preferencia de 'instructivo')
                 source_folder = source_paths[0]
+                
+                # Determinar la categoría basada en la ruta origen
+                category = self._determine_category_from_path(source_folder)
+                logger.info(f"Categoría determinada para {original_ref}: {category}")
                 
                 # Crear estructura de carpetas
                 target_folder = self._create_folder_structure(
@@ -224,7 +227,7 @@ class ReferenceFolderCreationManager:
                 })
                 
             except Exception as e:
-                results["errors"].append(f"Error procesando {ref_data['original']}: {str(e)}")
+                results["errors"].append(f"Error procesando {original_ref}: {str(e)}")
                 
         return results
 
@@ -588,9 +591,231 @@ class ReferenceFolderCreationManager:
             if 'conn' in locals():
                 conn.close()
 
-    def _copy_files(self, 
-                    source_folder: str, 
-                    target_folder: Path) -> Dict[str, str]:
+    def _is_root_path(self, path: str) -> bool:
+        """
+        Verifica si una ruta es exactamente una de las rutas base.
+        
+        Args:
+            path: Ruta a verificar
+            
+        Returns:
+            bool: True si es una ruta base exacta, False en caso contrario
+        """
+        # Normalizar la ruta para comparación
+        normalized_path = os.path.normpath(path).lower()
+        
+        # Verificar si la ruta normalizada es exactamente igual a alguna ruta base
+        for root_path in self.root_paths:
+            normalized_root = os.path.normpath(root_path).lower()
+            if normalized_path == normalized_root:
+                logger.info(f"Ruta {path} es una ruta base")
+                return True
+        return False
+
+    def _get_all_possible_paths(self, start_path: str) -> List[Dict[str, str]]:
+        """
+        Obtiene TODAS las rutas posibles desde la carpeta padre.
+        
+        Args:
+            start_path: Ruta inicial (carpeta padre) desde donde comenzar la búsqueda
+            
+        Returns:
+            List[Dict[str, str]]: Lista de diccionarios con información de cada ruta
+        """
+        paths_info = []
+        logger.info(f"Obteniendo todas las rutas desde: {start_path}")
+        
+        try:
+            # Primero, obtener la lista completa de directorios
+            all_dirs = []
+            for root, dirs, _ in os.walk(start_path):
+                # Si es una ruta base exacta, no explorar sus subdirectorios
+                if self._is_root_path(root):
+                    continue
+                    
+                for dir_name in dirs:
+                    full_path = os.path.join(root, dir_name)
+                    # Solo excluir si es una ruta base exacta
+                    if not self._is_root_path(full_path):
+                        all_dirs.append((full_path, dir_name, root))
+            
+            # Procesar cada directorio encontrado
+            for full_path, dir_name, parent in all_dirs:
+                # Crear diccionario con información relevante de la ruta
+                path_info = {
+                    'path': full_path,
+                    'name': dir_name,
+                    'is_editable': 'editable' in dir_name.lower() or 'editables' in dir_name.lower(),
+                    'is_nube': dir_name.lower() == 'nube',
+                    'parent': parent,
+                    'relative_to_start': os.path.relpath(full_path, start_path),
+                    'depth': len(os.path.relpath(full_path, start_path).split(os.sep))
+                }
+                
+                # Registrar información detallada
+                logger.info(f"Carpeta encontrada: {full_path}")
+                logger.info(f"  Nombre: {dir_name}")
+                logger.info(f"  Es EDITABLE: {path_info['is_editable']}")
+                logger.info(f"  Es NUBE: {path_info['is_nube']}")
+                logger.info(f"  Ruta relativa: {path_info['relative_to_start']}")
+                logger.info(f"  Profundidad: {path_info['depth']}")
+                
+                paths_info.append(path_info)
+            
+            # Ordenar las rutas por profundidad para mejor visualización
+            paths_info.sort(key=lambda x: (x['depth'], x['path']))
+            
+            # Registrar resumen
+            logger.info(f"Total de rutas encontradas: {len(paths_info)}")
+            logger.info("Resumen de rutas:")
+            for path_info in paths_info:
+                logger.info(f"- {path_info['path']}")
+            
+            return paths_info
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo rutas desde {start_path}: {str(e)}")
+            return []
+
+    def _find_base_folder(self, source_folder: str) -> str:
+        """
+        Encuentra la carpeta base del proyecto.
+        Retrocede en la estructura hasta encontrar una carpeta que:
+        1. No sea una carpeta de sistema (NUBE, EDITABLES, etc.)
+        2. No sea una ruta base de la NAS
+        3. Contenga subcarpetas con archivos del proyecto
+        
+        Args:
+            source_folder: Carpeta origen desde donde iniciar la búsqueda
+            
+        Returns:
+            str: Ruta de la carpeta base identificada
+        """
+        current_path = source_folder
+        system_folders = {'nube', 'editables', 'editable', 'hojas de diseño', 'planos'}
+        
+        while current_path != os.path.dirname(current_path):  # Mientras no lleguemos a la raíz
+            folder_name = os.path.basename(current_path).lower()
+            parent_path = os.path.dirname(current_path)
+            
+            # Si es una ruta base de la NAS, detenerse en el nivel anterior
+            if self._is_root_path(current_path):
+                return parent_path
+                
+            # Si es una carpeta de sistema, subir un nivel
+            if folder_name in system_folders:
+                current_path = parent_path
+                continue
+                
+            try:
+                # Verificar si esta carpeta tiene una estructura de proyecto válida
+                has_system_folder = False
+                for item in os.listdir(current_path):
+                    item_lower = item.lower()
+                    if item_lower in system_folders:
+                        has_system_folder = True
+                        break
+                
+                # Si encontramos una carpeta que contiene subcarpetas de sistema,
+                # esta es nuestra carpeta base
+                if has_system_folder:
+                    return current_path
+                    
+            except Exception as e:
+                logger.error(f"Error explorando {current_path}: {str(e)}")
+            
+            current_path = parent_path
+            
+        return source_folder  # Si no encontramos nada, devolver la carpeta original
+
+    def _find_rhino_file(self, source_folder: str) -> Optional[str]:
+        """
+        Busca el archivo Rhino siguiendo la lógica especificada.
+        
+        Args:
+            source_folder: Carpeta origen donde iniciar la búsqueda
+            
+        Returns:
+            Optional[str]: Ruta del archivo Rhino encontrado o None si no se encuentra
+        """
+        logger.info(f"Buscando archivo Rhino para: {source_folder}")
+        
+        try:
+            # 1. Encontrar la carpeta base del proyecto
+            base_path = self._find_base_folder(source_folder)
+            logger.info(f"Carpeta base identificada: {base_path}")
+            
+            # 2. Obtener todas las rutas posibles desde la carpeta base
+            all_paths = self._get_all_possible_paths(base_path)
+            
+            # Registrar todas las rutas encontradas
+            logger.info("Rutas encontradas:")
+            for path_info in all_paths:
+                logger.info(f"- {path_info['path']}")
+                logger.info(f"  Profundidad: {path_info['depth']}")
+                logger.info(f"  Es EDITABLE: {path_info['is_editable']}")
+                logger.info(f"  Es NUBE: {path_info['is_nube']}")
+                logger.info(f"  Ruta relativa: {path_info['relative_to_start']}")
+            
+            # 3. Usar el LLM para determinar la mejor ruta
+            search_path_response, _ = self.llm.determine_rhino_search_strategy(
+                source_folder=source_folder,
+                reference=os.path.basename(source_folder),
+                available_paths=all_paths
+            )
+            
+            search_path = search_path_response.strip()
+            logger.info(f"LLM sugiere buscar en: {search_path}")
+            
+            if not os.path.exists(search_path):
+                logger.warning(f"La ruta sugerida no existe: {search_path}")
+                return None
+                
+            # 4. Buscar archivos Rhino en la ruta sugerida
+            rhino_files = []
+            for root, _, files in os.walk(search_path):
+                for file in files:
+                    if file.lower().endswith('.3dm'):
+                        rhino_files.append(os.path.join(root, file))
+                        logger.info(f"Archivo Rhino encontrado: {os.path.join(root, file)}")
+            
+            if rhino_files:
+                # 5. Usar el LLM para seleccionar el mejor archivo
+                response, _ = self.llm.suggest_rhino_file(
+                    files=rhino_files,
+                    reference=os.path.basename(source_folder),
+                    source_folder=source_folder
+                )
+                
+                # Verificar que la respuesta sea una ruta válida
+                if response and os.path.exists(response.strip()):
+                    chosen_file = response.strip()
+                    logger.info(f"LLM sugirió el archivo: {chosen_file}")
+                    return chosen_file
+                else:
+                    # Si el LLM no pudo decidir, usar la lógica de prioridad por versión
+                    rhino_files.sort(key=lambda x: (
+                        0 if 'rhino5' in x.lower() or 'r5' in x.lower() else
+                        1 if 'rhino4' in x.lower() or 'r4' in x.lower() else
+                        2 if 'rhino6' in x.lower() or 'r6' in x.lower() else
+                        3 if 'rhino7' in x.lower() or 'r7' in x.lower() else 4,
+                        # Segundo criterio: priorizar archivos en carpetas EDITABLE
+                        0 if any(ed in os.path.dirname(x).lower() for ed in ['editable', 'editables']) else 1,
+                        # Tercer criterio: profundidad de la ruta (menos es mejor)
+                        len(os.path.normpath(x).split(os.sep))
+                    ))
+                    chosen_file = rhino_files[0]
+                    logger.info(f"Seleccionado archivo por prioridad de versión: {chosen_file}")
+                    return chosen_file
+            
+            logger.warning(f"No se encontraron archivos Rhino en {search_path}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error buscando archivo Rhino: {str(e)}")
+            return None
+
+    def _copy_files(self, source_folder: str, target_folder: Path) -> Dict:
         """
         Copia archivos relevantes (PDF, Rhino) a la carpeta destino.
         
@@ -641,47 +866,15 @@ class ReferenceFolderCreationManager:
             
             # 2. Buscar y copiar archivo Rhino
             try:
-                # Retroceder un nivel en la ruta origen
-                parent_dir = os.path.dirname(source_folder)
-                
-                # Solo buscar si no es una ruta raíz
-                if not self._is_root_path(parent_dir):
-                    rhino_candidates = []
-                    
-                    # Buscar en carpetas EDITABLE/EDITABLES
-                    for root, dirs, files in os.walk(parent_dir):
-                        if any(ed in root.lower() for ed in ['editable', 'editables']):
-                            for file in files:
-                                if file.lower().endswith('.3dm'):
-                                    rhino_candidates.append(os.path.join(root, file))
-                    
-                    if rhino_candidates:
-                        # Priorizar versiones de Rhino (5 > 4 > 6 > 7)
-                        def rhino_version_key(path):
-                            filename = os.path.basename(path).lower()
-                            if 'rhino5' in filename or 'r5' in filename:
-                                return 0
-                            elif 'rhino4' in filename or 'r4' in filename:
-                                return 1
-                            elif 'rhino6' in filename or 'r6' in filename:
-                                return 2
-                            elif 'rhino7' in filename or 'r7' in filename:
-                                return 3
-                            return 4
-                        
-                        rhino_candidates.sort(key=rhino_version_key)
-                        rhino_to_copy = rhino_candidates[0]
-                        
-                        # Copiar archivo Rhino
-                        shutil.copy2(rhino_to_copy, target_folder)
-                        result["rhino"] = os.path.basename(rhino_to_copy)
-                        logger.info(f"Archivo Rhino copiado: {result['rhino']}")
-                    else:
-                        logger.warning("No se encontraron archivos Rhino")
-                        result["errors"].append("No se encontraron archivos Rhino")
+                rhino_file = self._find_rhino_file(source_folder)
+                if rhino_file:
+                    # Copiar archivo Rhino
+                    shutil.copy2(rhino_file, target_folder)
+                    result["rhino"] = os.path.basename(rhino_file)
+                    logger.info(f"Archivo Rhino copiado: {result['rhino']}")
                 else:
-                    logger.info("Ruta raíz alcanzada, no se buscarán archivos Rhino")
-                    result["errors"].append("Ruta raíz alcanzada, no se buscarán archivos Rhino")
+                    logger.warning("No se encontraron archivos Rhino")
+                    result["errors"].append("No se encontraron archivos Rhino")
                     
             except Exception as e:
                 error_msg = f"Error buscando archivo Rhino: {str(e)}"
@@ -694,4 +887,36 @@ class ReferenceFolderCreationManager:
             error_msg = f"Error copiando archivos: {str(e)}"
             logger.error(error_msg)
             result["errors"].append(error_msg)
-            return result 
+            return result
+
+    def _determine_category_from_path(self, path: str) -> str:
+        """
+        Determina la categoría basada en la ruta del archivo.
+        
+        Args:
+            path: Ruta completa del archivo/carpeta
+            
+        Returns:
+            str: Categoría determinada
+        """
+        path_lower = path.lower()
+        
+        # Mapeo de palabras clave a categorías
+        category_mapping = {
+            'ambiente': 'AMBIENTE',
+            'baño': 'BAÑO',
+            'cocina': 'COCINA',
+            'dormitorio': 'DORMITORIO',
+            'oficina': 'OFICINA',
+            'escritorio': 'OFICINA'  # Caso especial para escritorios
+        }
+        
+        # Buscar palabras clave en la ruta
+        for keyword, category in category_mapping.items():
+            if keyword in path_lower:
+                logger.info(f"Categoría {category} determinada por palabra clave '{keyword}' en ruta")
+                return category
+        
+        # Si no se encuentra ninguna categoría específica, usar AMBIENTE como predeterminado
+        logger.warning(f"No se pudo determinar categoría específica para ruta: {path}")
+        return "AMBIENTE" 
