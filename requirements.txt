@@ -21,3 +21,4 @@ google-auth-httplib2==0.2.0
 # Dependencias para LLM
 openai>=1.0.0
 python-dotenv>=1.0.0
+tiktoken==0.5.2

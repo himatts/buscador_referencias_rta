@@ -1,25 +1,103 @@
-"""
-Panel de chat integrado en la ventana principal.
-Este módulo implementa la interfaz visual del chat que se mostrará
-cuando se active el modo 'Referencias con creación de carpeta'.
-"""
-
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
-    QPushButton, QLabel, QFrame, QSizePolicy
+    QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QFrame, QScrollArea, QSizePolicy
 )
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QTextCursor, QKeyEvent
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtGui import QFont
+from datetime import datetime
+
+class MessageBubble(QFrame):
+    """Widget personalizado para representar un mensaje en el chat."""
+    def __init__(self, sender: str, message: str, timestamp: str,
+                 is_error: bool = False, parent=None):
+        super().__init__(parent)
+        self.sender = sender
+        self.is_user = (sender.lower() == "usuario")
+
+        self.setFrameStyle(QFrame.StyledPanel | QFrame.Plain)
+        self.setLineWidth(1)
+
+        # Estilos según remitente
+        if is_error:
+            self.setStyleSheet("""
+                MessageBubble {
+                    background-color: #ffe6e6;
+                    border: 1px solid #ffcccc;
+                    border-radius: 15px;
+                    margin: 5px;
+                }
+            """)
+        elif self.is_user:
+            # Mensaje del usuario (alineado a la derecha)
+            self.setStyleSheet("""
+                MessageBubble {
+                    background-color: #007bff;
+                    color: white;
+                    border-radius: 15px;
+                    margin: 5px;
+                }
+            """)
+        else:
+            # Mensaje del asistente (alineado a la izquierda)
+            self.setStyleSheet("""
+                MessageBubble {
+                    background-color: #f8f9fa;
+                    border: 1px solid #e9ecef;
+                    border-radius: 15px;
+                    margin: 5px;
+                }
+            """)
+
+        # Layout de la burbuja
+        layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        # Etiqueta de remitente (Opcional, si deseas mostrar "Asistente"/"Usuario")
+        sender_label = QLabel(sender)
+        sender_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: 11px;
+                font-weight: bold;
+                color: {"#ffffff" if self.is_user else "#333333"};
+            }}
+        """)
+        layout.addWidget(sender_label)
+
+        # Texto del mensaje
+        message_label = QLabel(message)
+        message_label.setWordWrap(True)
+        message_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: 12px;
+                color: {"#ffffff" if self.is_user else "#333333"};
+            }}
+        """)
+        layout.addWidget(message_label)
+
+        # Timestamp
+        time_label = QLabel(timestamp)
+        time_label.setAlignment(Qt.AlignRight)
+        time_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: 10px;
+                color: {"#ffffff80" if self.is_user else "#666666"};
+            }}
+        """)
+        layout.addWidget(time_label)
+
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+
 
 class ChatPanel(QWidget):
-    """Panel de chat que permite la interacción entre el usuario y el LLM."""
-    
-    # Señales para comunicación con otros componentes
-    message_sent = pyqtSignal(str)  # Emitida cuando el usuario envía un mensaje
-    
+    """Panel de chat con interacción mediante botones."""
+    # Si ya no usas mensajes de texto directo, puedes eliminar esta señal
+    message_sent = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Definir el estilo de botón consistente con mainWindow
+
+        # Estilo genérico de botones
         self.button_style = """
             QPushButton {
                 min-height: 20px;
@@ -41,16 +119,21 @@ class ChatPanel(QWidget):
                 color: #666666;
             }
         """
+
+        self.typing_timer = QTimer()
+        self.typing_timer.setInterval(500)
+        self.typing_timer.timeout.connect(self._update_typing_animation)
+        self.typing_dots = 0
+
         self.init_ui()
-        
+
     def init_ui(self):
-        """Inicializa la interfaz de usuario del panel."""
-        # Layout principal
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
-        
-        # Título del chat
-        title_label = QLabel("Asistente RTA")
+        layout.setContentsMargins(5, 5, 5, 5)
+
+        # Título o encabezado del chat
+        title_label = QLabel("Asistente IA")
         title_label.setAlignment(Qt.AlignCenter)
         title_label.setStyleSheet("""
             QLabel {
@@ -58,30 +141,36 @@ class ChatPanel(QWidget):
                 font-weight: bold;
                 color: #2c3e50;
                 padding: 5px;
-                background-color: #f0f0f0;
+                background-color: #ffffff;
                 border: 1px solid #ccc;
                 border-radius: 3px;
             }
         """)
         layout.addWidget(title_label)
-        
-        # Área de mensajes
-        self.chat_display = QTextEdit()
-        self.chat_display.setReadOnly(True)
-        self.chat_display.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.chat_display.setStyleSheet("""
-            QTextEdit {
+
+        # Área scrollable para mostrar los mensajes
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_area.setStyleSheet("""
+            QScrollArea {
                 border: 1px solid #ccc;
                 border-radius: 3px;
-                padding: 8px;
-                background-color: white;
-                font-family: "Sans Serif";
-                font-size: 12px;
+                background-color: #ffffff;
             }
         """)
-        layout.addWidget(self.chat_display)
-        
-        # Indicador de "escribiendo..."
+
+        # Contenedor de mensajes
+        self.messages_container = QWidget()
+        self.messages_layout = QVBoxLayout(self.messages_container)
+        self.messages_layout.setSpacing(5)
+        self.messages_layout.setAlignment(Qt.AlignTop)
+        self.messages_layout.addStretch()  # Mantiene los mensajes arriba
+
+        self.scroll_area.setWidget(self.messages_container)
+        layout.addWidget(self.scroll_area)
+
+        # Indicador de "Asistente escribiendo..."
         self.typing_label = QLabel("")
         self.typing_label.setStyleSheet("""
             QLabel {
@@ -93,36 +182,7 @@ class ChatPanel(QWidget):
         """)
         layout.addWidget(self.typing_label)
 
-        # Layout para botones de acción
-        self.action_buttons_layout = QHBoxLayout()
-        layout.addLayout(self.action_buttons_layout)
-        
-        # Área de entrada de texto
-        self.message_input = QTextEdit()
-        self.message_input.setFixedHeight(60)
-        self.message_input.setStyleSheet("""
-            QTextEdit {
-                border: 1px solid #ccc;
-                border-radius: 3px;
-                padding: 5px;
-                background-color: white;
-                font-family: "Sans Serif";
-                font-size: 12px;
-            }
-            QTextEdit:focus {
-                border-color: #007bff;
-            }
-        """)
-        layout.addWidget(self.message_input)
-        
-        # Botón de enviar
-        self.send_button = QPushButton("Enviar")
-        self.send_button.setFixedHeight(30)
-        self.send_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.send_button.setStyleSheet(self.button_style)
-        layout.addWidget(self.send_button)
-        
-        # Label para mostrar el costo
+        # (Opcional) Etiqueta de costo
         self.cost_label = QLabel("Costo de la interacción: $0.00")
         self.cost_label.setAlignment(Qt.AlignRight)
         self.cost_label.setStyleSheet("""
@@ -135,161 +195,162 @@ class ChatPanel(QWidget):
         """)
         layout.addWidget(self.cost_label)
 
-        # Conectar señales
-        self.send_button.clicked.connect(self.send_message)
-        self.message_input.textChanged.connect(self.adjust_input_height)
-        self.message_input.installEventFilter(self)
-        
-        # Estilo general del panel
         self.setStyleSheet("""
             ChatPanel {
-                background-color: #f5f6fa;
-                border-right: 1px solid #dcdde1;
+                background-color: #ffffff;
             }
         """)
 
+        self.setLayout(layout)
+
+    def append_message(self, sender: str, message: str, is_error: bool = False):
+        """Agrega una burbuja de mensaje al panel de chat."""
+        current_time = datetime.now().strftime("%H:%M")
+        bubble = MessageBubble(sender, message, current_time, is_error, self.messages_container)
+
+        container = QWidget()
+        container_layout = QHBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+
+        if sender.lower() == "usuario":
+            # Mensajes del usuario a la derecha
+            container_layout.addStretch()
+            container_layout.addWidget(bubble)
+        else:
+            # Mensajes del sistema o asistente a la izquierda
+            container_layout.addWidget(bubble)
+            container_layout.addStretch()
+
+        # Insertamos el mensaje justo antes del stretch final
+        self.messages_layout.insertWidget(self.messages_layout.count() - 1, container)
+        self._scroll_to_bottom()
+
     def show_action_buttons(self, actions):
         """
-        Muestra botones de acción en el panel.
-        
-        Args:
-            actions: Lista de diccionarios con las acciones.
-                    Cada diccionario debe tener:
-                    - text: Texto del botón
-                    - callback: Función a llamar cuando se presione
+        Muestra una fila de botones para que el usuario elija su respuesta.
+        `actions` es una lista de diccionarios con: {"text": str, "callback": callable}
         """
-        # Limpiar botones anteriores
-        while self.action_buttons_layout.count():
-            item = self.action_buttons_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-                
-        # Crear nuevos botones
-        for action in actions:
-            btn = QPushButton(action['text'])
-            btn.setStyleSheet(self.button_style)
-            btn.clicked.connect(action['callback'])
-            self.action_buttons_layout.addWidget(btn)
-            
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(20, 5, 20, 5)
+        layout.setSpacing(10)
+
+        button_list = []
+
+        for action_dict in actions:
+            btn = QPushButton(action_dict["text"])
+            btn.setStyleSheet(self.button_style + """
+                QPushButton {
+                    background-color: #007bff;
+                    color: white;
+                    min-width: 60px;
+                    font-size: 12px;
+                }
+                QPushButton:hover {
+                    background-color: #0056b3;
+                }
+                QPushButton:pressed {
+                    background-color: #004085;
+                }
+            """)
+
+            def make_callback(btn_ref, texto_opcion, original_callback):
+                def on_click():
+                    # El usuario seleccionó el texto_opcion
+                    self.append_message("Usuario", f"{texto_opcion}")
+                    # Ejecutamos el callback real (por ejemplo, tu lógica de IA)
+                    original_callback()
+                    # Deshabilitar todos los botones tras la elección
+                    for b in button_list:
+                        b.setEnabled(False)
+                        b.setStyleSheet(self.button_style + """
+                            QPushButton {
+                                background-color: #cccccc;
+                                color: #666666;
+                            }
+                        """)
+                return on_click
+
+            btn.clicked.connect(make_callback(btn, action_dict["text"], action_dict["callback"]))
+            layout.addWidget(btn)
+            button_list.append(btn)
+
+        # Insertar los botones en el layout de mensajes
+        self.messages_layout.insertWidget(self.messages_layout.count() - 1, container)
+        self._scroll_to_bottom()
+
     def clear_action_buttons(self):
-        """Elimina todos los botones de acción."""
-        while self.action_buttons_layout.count():
-            item = self.action_buttons_layout.takeAt(0)
+        """Elimina solamente los contenedores de botones; preserva los mensajes."""
+        for i in reversed(range(self.messages_layout.count())):
+            item = self.messages_layout.itemAt(i)
+            if item and item.widget():
+                widget = item.widget()
+                # Si no es la stretch final y no es una burbuja de mensaje, lo quitamos
+                if isinstance(widget, QWidget) and not self._is_bubble_container(widget):
+                    widget.deleteLater()
+
+    def clear_chat(self):
+        """Opcional: Limpia todo el historial de mensajes. Llamar solo si inicias nueva conversación."""
+        while self.messages_layout.count() > 1:  # Mantener el stretch final
+            item = self.messages_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        
-    def eventFilter(self, obj, event):
-        """Maneja eventos personalizados."""
-        if obj == self.message_input and event.type() == QKeyEvent.KeyPress:
-            if event.key() == Qt.Key_Return and not event.modifiers() & Qt.ShiftModifier:
-                self.send_message()
-                return True
-        return super().eventFilter(obj, event)
-        
-    def send_message(self):
-        """Envía el mensaje actual y limpia el campo de entrada."""
-        message = self.message_input.toPlainText().strip()
-        if message:
-            self.append_message("Usuario", message)
-            self.message_sent.emit(message)
-            self.message_input.clear()
-            
-    def append_message(self, sender: str, message: str, is_error: bool = False):
-        """
-        Añade un mensaje al área de chat.
-        
-        Args:
-            sender: Nombre del remitente ("Sistema", "Usuario", "LLM")
-            message: Contenido del mensaje
-            is_error: Si es True, el mensaje se muestra como error
-        """
-        # Preparar estilos CSS para cada tipo de mensaje
-        styles = {
-            "error": """
-                background-color: #ffe6e6;
-                color: #cc0000;
-                border: 1px solid #ffcccc;
-                border-radius: 3px;
-                padding: 8px;
-                margin: 5px 0;
-            """,
-            "Sistema": """
-                background-color: #f0f0f0;
-                color: #333333;
-                border: 1px solid #ccc;
-                border-radius: 3px;
-                padding: 8px;
-                margin: 5px 0;
-            """,
-            "Usuario": """
-                background-color: #e6f3ff;
-                color: #0056b3;
-                border: 1px solid #cce5ff;
-                border-radius: 3px;
-                padding: 8px;
-                margin: 5px 0;
-                text-align: right;
-            """,
-            "LLM": """
-                background-color: #f8f9fa;
-                color: #333333;
-                border: 1px solid #e9ecef;
-                border-radius: 3px;
-                padding: 8px;
-                margin: 5px 0;
-            """
-        }
-        
-        # Seleccionar el estilo apropiado
-        style = styles["error"] if is_error else styles.get(sender, styles["LLM"])
-        
-        # Formatear y añadir el mensaje
-        cursor = self.chat_display.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.chat_display.setTextCursor(cursor)
-        
-        # Insertar un div con el estilo correspondiente
-        self.chat_display.insertHtml(
-            f'<div style="{style}">'
-            f'<b>{sender}:</b><br>'
-            f'{message.replace(chr(10), "<br>")}'
-            '</div><br>'
-        )
-        
-        # Asegurar que el último mensaje sea visible
-        self.chat_display.verticalScrollBar().setValue(
-            self.chat_display.verticalScrollBar().maximum()
-        )
-        
-    def set_typing_status(self, is_typing: bool):
-        """
-        Actualiza el indicador de 'escribiendo...'.
-        
-        Args:
-            is_typing: True si el LLM está procesando, False en caso contrario
-        """
-        self.typing_label.setText(
-            "El asistente está escribiendo..." if is_typing else ""
-        )
-        
-    def adjust_input_height(self):
-        """Ajusta la altura del campo de entrada según el contenido."""
-        document_height = self.message_input.document().size().height()
-        if document_height <= 60:  # Altura máxima permitida
-            self.message_input.setFixedHeight(max(60, document_height + 10))
-            
-    def clear_chat(self):
-        """Limpia el historial del chat."""
-        self.chat_display.clear()
-        self.message_input.clear()
+
         self.typing_label.clear()
         self.cost_label.setText("Costo de la interacción: $0.00")
-        
+
+    def set_typing_status(self, is_typing: bool):
+        """Muestra u oculta el indicador de 'escribiendo...'."""
+        if is_typing:
+            self.typing_dots = 0
+            self.typing_timer.start()
+            self._update_typing_animation()
+        else:
+            self.typing_timer.stop()
+            self.typing_label.setText("")
+
     def update_cost(self, cost: float):
-        """
-        Actualiza el costo mostrado de la interacción.
-        
-        Args:
-            cost: Costo en dólares de la interacción
-        """
-        self.cost_label.setText(f"Costo de la interacción: ${cost:.4f}") 
+        """Actualiza el costo de interacción mostrado (opcional)."""
+        self.cost_label.setText(f"Costo de la interacción: ${cost:.4f}")
+
+    def _update_typing_animation(self):
+        """Actualiza la animación de los puntos suspensivos para 'escribiendo...'."""
+        self.typing_dots = (self.typing_dots + 1) % 4
+        dots = "." * self.typing_dots
+        self.typing_label.setText(f"El asistente está escribiendo{dots}")
+
+    def _scroll_to_bottom(self):
+        """Hace scroll hasta el final después de agregar un mensaje/botón."""
+        QTimer.singleShot(100, lambda: self.scroll_area.verticalScrollBar().setValue(
+            self.scroll_area.verticalScrollBar().maximum()
+        ))
+
+    def _is_bubble_container(self, widget):
+        """Verifica si el widget dado contiene una burbuja de mensaje."""
+        if not widget.layout():
+            return False
+        for i in range(widget.layout().count()):
+            child = widget.layout().itemAt(i).widget()
+            if isinstance(child, MessageBubble):
+                return True
+        return False
+
+    def resizeEvent(self, event):
+        """Ajusta el ancho máximo de las burbujas en función del ancho disponible."""
+        super().resizeEvent(event)
+        max_bubble_width = int(self.scroll_area.width() * 0.8)
+
+        # Recorremos los widgets contenedores de burbujas
+        for i in range(self.messages_layout.count()):
+            item = self.messages_layout.itemAt(i)
+            if item and item.widget():
+                container = item.widget()
+                layout = container.layout()
+                if layout:
+                    for j in range(layout.count()):
+                        bubble_item = layout.itemAt(j)
+                        bubble_widget = bubble_item.widget()
+                        if isinstance(bubble_widget, MessageBubble):
+                            bubble_widget.setMaximumWidth(max_bubble_width)
+
+        self._scroll_to_bottom()
