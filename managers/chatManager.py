@@ -449,21 +449,47 @@ class ChatManager(QObject):
                     )
                     
                     # Generar mensaje de resumen
-                    message = "Se han creado las carpetas y se han copiado los archivos:<br><br>"
+                    message = "Se han creado las carpetas y se han copiado los archivos:"
                     
                     if results["processed"]:
-                        for ref in results["processed"]:
-                            message += f'• <b style="font-size: 13px">{ref["original"]}</b><br>'
+                        for i, ref in enumerate(results["processed"]):
+                            message += "\n\n"  # Separación entre referencias
+                            
+                            if i > 0:
+                                message += "---\n\n"  # Divisor entre referencias
+                            
+                            # Crear botón de carpeta
+                            folder_button = {
+                                'text': f"📁 {ref['original']}",
+                                'path': ref['target_folder'],
+                                'type': 'folder'
+                            }
+                            message += f"<file_button>{folder_button}</file_button>"
+                            
                             if ref['copied_files'].get('pdf'):
-                                message += f'&nbsp;&nbsp;&nbsp;• <b>PDF:</b> {os.path.basename(ref["copied_files"]["pdf"])}<br>'
+                                pdf_path = os.path.join(ref["target_folder"], ref['copied_files']["pdf"])
+                                pdf_button = {
+                                    'text': f"📄 {ref['copied_files']['pdf']}",
+                                    'path': pdf_path,
+                                    'type': 'pdf',
+                                    'indent': True
+                                }
+                                message += f"\n<file_button>{pdf_button}</file_button>"
+                                
                             if ref['copied_files'].get('rhino'):
-                                message += f'&nbsp;&nbsp;&nbsp;• <b>Rhino:</b> {os.path.basename(ref["copied_files"]["rhino"])}<br>'
-                            message += "<br>"
+                                rhino_path = os.path.join(ref["target_folder"], ref['copied_files']["rhino"])
+                                rhino_button = {
+                                    'text': f"🔧 {ref['copied_files']['rhino']}",
+                                    'path': rhino_path,
+                                    'type': 'rhino',
+                                    'indent': True
+                                }
+                                message += f"\n<file_button>{rhino_button}</file_button>"
                     
                     if results["errors"]:
-                        message += "<br>Errores encontrados:<br>"
+                        message += "\n\nErrores encontrados:\n"
                         for error in results["errors"]:
-                            message += f'• {error}<br>'
+                            message += f'• {error}\n'
                     
                     self.llm_response.emit("Sistema", message, False)
                     

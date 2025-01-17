@@ -5,6 +5,77 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont
 from datetime import datetime
+import os
+
+class FileButton(QPushButton):
+    """Botón personalizado para archivos y carpetas."""
+    def __init__(self, text: str, file_path: str, button_type: str = "default", parent=None):
+        super().__init__(text, parent)
+        self.file_path = file_path
+        self.clicked.connect(self._on_click)
+        
+        # Estilos base
+        base_style = """
+            QPushButton {
+                padding: 4px 8px;
+                border-radius: 4px;
+                color: white;
+                font-size: 12px;
+                border: none;
+                margin: 2px;
+            }
+            QPushButton:hover {
+                border: none;
+            }
+            QPushButton:pressed {
+                border: none;
+            }
+        """
+        
+        # Estilos específicos según tipo
+        if button_type == "folder":
+            self.setStyleSheet(base_style + """
+                QPushButton {
+                    background-color: #28a745;
+                }
+                QPushButton:hover {
+                    background-color: #218838;
+                }
+                QPushButton:pressed {
+                    background-color: #1e7e34;
+                }
+            """)
+        elif button_type == "pdf":
+            self.setStyleSheet(base_style + """
+                QPushButton {
+                    background-color: #dc3545;
+                }
+                QPushButton:hover {
+                    background-color: #c82333;
+                }
+                QPushButton:pressed {
+                    background-color: #bd2130;
+                }
+            """)
+        elif button_type == "rhino":
+            self.setStyleSheet(base_style + """
+                QPushButton {
+                    background-color: #6c757d;
+                }
+                QPushButton:hover {
+                    background-color: #5a6268;
+                }
+                QPushButton:pressed {
+                    background-color: #545b62;
+                }
+            """)
+    
+    def _on_click(self):
+        """Maneja el clic del botón abriendo el archivo o carpeta."""
+        try:
+            os.startfile(self.file_path)
+        except Exception as e:
+            print(f"Error al abrir {self.file_path}: {str(e)}")
 
 class MessageBubble(QFrame):
     """Widget personalizado para representar un mensaje en el chat."""
@@ -30,7 +101,6 @@ class MessageBubble(QFrame):
                 }
             """)
         elif self.is_user:
-            # Mensaje del usuario (alineado a la derecha)
             self.setStyleSheet("""
                 MessageBubble {
                     background-color: #007bff;
@@ -41,7 +111,6 @@ class MessageBubble(QFrame):
                 }
             """)
         else:
-            # Mensaje del asistente (alineado a la izquierda)
             self.setStyleSheet("""
                 MessageBubble {
                     background-color: #f8f9fa;
@@ -57,7 +126,7 @@ class MessageBubble(QFrame):
         layout.setSpacing(4)
         layout.setContentsMargins(12, 12, 12, 12)
 
-        # Etiqueta de remitente (Opcional, si deseas mostrar "Asistente"/"Usuario")
+        # Etiqueta de remitente
         sender_label = QLabel(sender)
         sender_label.setStyleSheet(f"""
             QLabel {{
@@ -68,17 +137,16 @@ class MessageBubble(QFrame):
         """)
         layout.addWidget(sender_label)
 
-        # Texto del mensaje
-        message_label = QLabel(message)
-        message_label.setWordWrap(True)
-        message_label.setTextFormat(Qt.RichText)  # Permitir formato HTML
-        message_label.setStyleSheet(f"""
-            QLabel {{
-                font-size: 12px;
-                color: {"#ffffff" if self.is_user else "#333333"};
-            }}
-        """)
-        layout.addWidget(message_label)
+        # Contenedor para el mensaje y los botones
+        message_container = QWidget()
+        message_layout = QVBoxLayout(message_container)
+        message_layout.setSpacing(4)
+        message_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Procesar el mensaje para extraer botones
+        self._process_message(message, message_layout)
+
+        layout.addWidget(message_container)
 
         # Timestamp
         time_label = QLabel(timestamp)
@@ -91,8 +159,97 @@ class MessageBubble(QFrame):
         """)
         layout.addWidget(time_label)
 
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+    def _process_message(self, message: str, layout: QVBoxLayout):
+        """Procesa el mensaje y crea los botones necesarios."""
+        # Dividir el mensaje en partes
+        parts = message.split("<file_button>")
+        
+        for i, part in enumerate(parts):
+            if i == 0:
+                if part.strip():
+                    # Procesar cada línea del texto
+                    for line in part.split('\n'):
+                        if line.strip():
+                            if line.strip() == "---":
+                                # Crear divisor
+                                divider = QFrame()
+                                divider.setFrameShape(QFrame.HLine)
+                                divider.setStyleSheet("""
+                                    QFrame {
+                                        border: none;
+                                        background-color: #e9ecef;
+                                        height: 1px;
+                                        margin: 8px 0;
+                                    }
+                                """)
+                                layout.addWidget(divider)
+                            else:
+                                label = QLabel(line.strip())
+                                label.setWordWrap(True)
+                                label.setStyleSheet(f"""
+                                    QLabel {{
+                                        font-size: 12px;
+                                        color: {"#ffffff" if self.is_user else "#333333"};
+                                    }}
+                                """)
+                                layout.addWidget(label)
+                continue
 
+            # Procesar botón
+            button_info, remaining_text = part.split("</file_button>", 1)
+            try:
+                button_data = eval(button_info)  # Convierte el string a diccionario
+                button = FileButton(
+                    text=button_data['text'],
+                    file_path=button_data['path'],
+                    button_type=button_data['type']
+                )
+                
+                # Crear contenedor horizontal para el botón
+                button_container = QWidget()
+                button_layout = QHBoxLayout(button_container)
+                button_layout.setContentsMargins(0, 0, 0, 0)
+                button_layout.setSpacing(0)
+                
+                # Si hay indentación especificada
+                if button_data.get('indent'):
+                    button_layout.addSpacing(20)  # Añadir espacio para indentación
+                    
+                button_layout.addWidget(button)
+                button_layout.addStretch()
+                
+                layout.addWidget(button_container)
+            except Exception as e:
+                print(f"Error procesando botón: {str(e)}")
+
+            # Procesar el texto restante
+            if remaining_text.strip():
+                # Procesar cada línea del texto restante
+                for line in remaining_text.split('\n'):
+                    if line.strip():
+                        if line.strip() == "---":
+                            # Crear divisor
+                            divider = QFrame()
+                            divider.setFrameShape(QFrame.HLine)
+                            divider.setStyleSheet("""
+                                QFrame {
+                                    border: none;
+                                    background-color: #e9ecef;
+                                    height: 1px;
+                                    margin: 8px 0;
+                                }
+                            """)
+                            layout.addWidget(divider)
+                        else:
+                            label = QLabel(line.strip())
+                            label.setWordWrap(True)
+                            label.setStyleSheet(f"""
+                                QLabel {{
+                                    font-size: 12px;
+                                    color: {"#ffffff" if self.is_user else "#333333"};
+                                }}
+                            """)
+                            layout.addWidget(label)
 
 class ChatPanel(QWidget):
     """Panel de chat con interacción mediante botones."""

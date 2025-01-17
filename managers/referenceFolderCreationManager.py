@@ -258,6 +258,9 @@ class ReferenceFolderCreationManager:
         # 5. Asegurar que no termine en punto o espacio
         name = name.rstrip(". ")
         
+        # 6. Convertir a mayúsculas
+        name = name.upper()
+        
         return name
 
     def _create_folder_structure(self, 
@@ -856,9 +859,11 @@ class ReferenceFolderCreationManager:
                     pdf_to_copy = max(pdf_candidates, key=os.path.getmtime)
                     logger.info(f"Seleccionado PDF más reciente: {pdf_to_copy}")
                 
-                # Copiar PDF
-                shutil.copy2(pdf_to_copy, target_folder)
-                result["pdf"] = os.path.basename(pdf_to_copy)
+                # Copiar PDF con nombre en mayúsculas
+                pdf_name = os.path.basename(pdf_to_copy).upper()
+                pdf_target = target_folder / pdf_name
+                shutil.copy2(pdf_to_copy, pdf_target)
+                result["pdf"] = pdf_name
                 logger.info(f"PDF copiado: {result['pdf']}")
             else:
                 logger.warning("No se encontraron archivos PDF")
@@ -868,9 +873,11 @@ class ReferenceFolderCreationManager:
             try:
                 rhino_file = self._find_rhino_file(source_folder)
                 if rhino_file:
-                    # Copiar archivo Rhino
-                    shutil.copy2(rhino_file, target_folder)
-                    result["rhino"] = os.path.basename(rhino_file)
+                    # Copiar archivo Rhino con nombre en mayúsculas
+                    rhino_name = os.path.basename(rhino_file).upper()
+                    rhino_target = target_folder / rhino_name
+                    shutil.copy2(rhino_file, rhino_target)
+                    result["rhino"] = rhino_name
                     logger.info(f"Archivo Rhino copiado: {result['rhino']}")
                 else:
                     logger.warning("No se encontraron archivos Rhino")
