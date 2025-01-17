@@ -383,20 +383,20 @@ class ChatManager(QObject):
                         logger.info(f"Contexto actualizado: {self.step_context}")
                         
                         # Generar mensaje con los nombres formateados
-                        message = "He obtenido los siguientes nombres formateados:\n\n"
+                        message = "He obtenido los siguientes nombres formateados:<br><br>"
                         
                         # Primero mostrar las referencias exitosas
                         for ref in refs_without_errors:
                             nombre_formateado = ref['nombre_formateado'][0] if isinstance(ref['nombre_formateado'], tuple) else ref['nombre_formateado']
-                            message += f"✓ Original: {ref['original']}\n"
-                            message += f"  Formateado: {nombre_formateado}\n\n"
+                            message += f'• <b>Original:</b> {ref["original"]}<br>'
+                            message += f'• <b>Formateado:</b> {nombre_formateado}<br><br>'
                         
                         # Luego mostrar las referencias con error
                         if refs_with_errors:
-                            message += "Referencias con problemas:\n"
+                            message += "Referencias con problemas:<br>"
                             for ref in refs_with_errors:
-                                message += f"⚠️ {ref['original']}: {ref['error']}\n"
-                            message += "\n"
+                                message += f'• {ref["original"]}: {ref["error"]}<br>'
+                            message += "<br>"
                         
                         message += "¿Deseas continuar con la creación de carpetas?"
                         
@@ -415,11 +415,11 @@ class ChatManager(QObject):
                         ]
                         self.controller.main_window.chat_panel.show_action_buttons(actions)
                     else:
-                        error_message = "No se pudo formatear ninguna referencia correctamente.\n\n"
+                        error_message = "No se pudo formatear ninguna referencia correctamente.<br><br>"
                         if refs_with_errors:
-                            error_message += "Errores encontrados:\n"
+                            error_message += "Errores encontrados:<br>"
                             for ref in refs_with_errors:
-                                error_message += f"⚠️ {ref['original']}: {ref['error']}\n"
+                                error_message += f'• {ref["original"]}: {ref["error"]}<br>'
                         raise ProcessStepError("buscar_sheets", error_message)
                     
                 except ProcessStepError as e:
@@ -449,31 +449,32 @@ class ChatManager(QObject):
                     )
                     
                     # Generar mensaje de resumen
-                    message = "Se han creado las carpetas y se han copiado los archivos:\n\n"
+                    message = "Se han creado las carpetas y se han copiado los archivos:<br><br>"
                     
                     if results["processed"]:
                         for ref in results["processed"]:
-                            message += f"✓ {ref['original']}:\n"
-                            message += f"  Carpeta: {ref['target_folder']}\n"
+                            message += f'• <b style="font-size: 13px">{ref["original"]}</b><br>'
                             if ref['copied_files'].get('pdf'):
-                                message += f"  PDF: {ref['copied_files']['pdf']}\n"
+                                message += f'&nbsp;&nbsp;&nbsp;• <b>PDF:</b> {os.path.basename(ref["copied_files"]["pdf"])}<br>'
                             if ref['copied_files'].get('rhino'):
-                                message += f"  Rhino: {ref['copied_files']['rhino']}\n"
-                            message += "\n"
+                                message += f'&nbsp;&nbsp;&nbsp;• <b>Rhino:</b> {os.path.basename(ref["copied_files"]["rhino"])}<br>'
+                            message += "<br>"
                     
                     if results["errors"]:
-                        message += "\nErrores encontrados:\n"
+                        message += "<br>Errores encontrados:<br>"
                         for error in results["errors"]:
-                            message += f"✗ {error}\n"
+                            message += f'• {error}<br>'
                     
                     self.llm_response.emit("Sistema", message, False)
                     
                     # Mostrar botón para abrir carpeta
                     if results["processed"]:
+                        # Obtener la carpeta padre (2 niveles arriba)
+                        parent_folder = os.path.dirname(os.path.dirname(results["processed"][0]['target_folder']))
                         actions = [
                             {
                                 'text': 'Abrir Carpeta',
-                                'callback': lambda: self._open_result_folder(results["processed"][0]['target_folder'])
+                                'callback': lambda: self._open_result_folder(parent_folder)
                             }
                         ]
                         self.controller.main_window.chat_panel.show_action_buttons(actions)

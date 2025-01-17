@@ -16,6 +16,7 @@ class MessageBubble(QFrame):
 
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Plain)
         self.setLineWidth(1)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
 
         # Estilos según remitente
         if is_error:
@@ -25,6 +26,7 @@ class MessageBubble(QFrame):
                     border: 1px solid #ffcccc;
                     border-radius: 15px;
                     margin: 5px;
+                    width: 100%;
                 }
             """)
         elif self.is_user:
@@ -35,6 +37,7 @@ class MessageBubble(QFrame):
                     color: white;
                     border-radius: 15px;
                     margin: 5px;
+                    width: 100%;
                 }
             """)
         else:
@@ -45,6 +48,7 @@ class MessageBubble(QFrame):
                     border: 1px solid #e9ecef;
                     border-radius: 15px;
                     margin: 5px;
+                    width: 100%;
                 }
             """)
 
@@ -67,6 +71,7 @@ class MessageBubble(QFrame):
         # Texto del mensaje
         message_label = QLabel(message)
         message_label.setWordWrap(True)
+        message_label.setTextFormat(Qt.RichText)  # Permitir formato HTML
         message_label.setStyleSheet(f"""
             QLabel {{
                 font-size: 12px;
@@ -209,20 +214,59 @@ class ChatPanel(QWidget):
         bubble = MessageBubble(sender, message, current_time, is_error, self.messages_container)
 
         container = QWidget()
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         container_layout = QHBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
 
         if sender.lower() == "usuario":
             # Mensajes del usuario a la derecha
             container_layout.addStretch()
             container_layout.addWidget(bubble)
+            container_layout.setStretchFactor(bubble, 0)
         else:
             # Mensajes del sistema o asistente a la izquierda
             container_layout.addWidget(bubble)
             container_layout.addStretch()
+            container_layout.setStretchFactor(bubble, 0)
 
         # Insertamos el mensaje justo antes del stretch final
         self.messages_layout.insertWidget(self.messages_layout.count() - 1, container)
+        
+        # Forzar el redimensionamiento inmediato
+        bubble_width = int(self.scroll_area.width() * 0.9)
+        bubble.setFixedWidth(bubble_width)
+        
+        # Programar una actualización adicional para asegurar el tamaño correcto
+        QTimer.singleShot(0, lambda: self._update_bubble_sizes())
+        
+        self._scroll_to_bottom()
+
+    def _update_bubble_sizes(self):
+        """Actualiza el tamaño de todas las burbujas."""
+        bubble_width = int(self.scroll_area.width() * 0.9)
+        
+        for i in range(self.messages_layout.count()):
+            item = self.messages_layout.itemAt(i)
+            if item and item.widget():
+                container = item.widget()
+                layout = container.layout()
+                if layout:
+                    for j in range(layout.count()):
+                        bubble_item = layout.itemAt(j)
+                        bubble_widget = bubble_item.widget()
+                        if isinstance(bubble_widget, MessageBubble):
+                            bubble_widget.setFixedWidth(bubble_width)
+
+    def showEvent(self, event):
+        """Se llama cuando el widget se muestra por primera vez."""
+        super().showEvent(event)
+        QTimer.singleShot(0, self._update_bubble_sizes)
+
+    def resizeEvent(self, event):
+        """Ajusta el ancho máximo de las burbujas cuando se redimensiona la ventana."""
+        super().resizeEvent(event)
+        self._update_bubble_sizes()
         self._scroll_to_bottom()
 
     def show_action_buttons(self, actions):
@@ -334,23 +378,3 @@ class ChatPanel(QWidget):
             if isinstance(child, MessageBubble):
                 return True
         return False
-
-    def resizeEvent(self, event):
-        """Ajusta el ancho máximo de las burbujas en función del ancho disponible."""
-        super().resizeEvent(event)
-        max_bubble_width = int(self.scroll_area.width() * 0.8)
-
-        # Recorremos los widgets contenedores de burbujas
-        for i in range(self.messages_layout.count()):
-            item = self.messages_layout.itemAt(i)
-            if item and item.widget():
-                container = item.widget()
-                layout = container.layout()
-                if layout:
-                    for j in range(layout.count()):
-                        bubble_item = layout.itemAt(j)
-                        bubble_widget = bubble_item.widget()
-                        if isinstance(bubble_widget, MessageBubble):
-                            bubble_widget.setMaximumWidth(max_bubble_width)
-
-        self._scroll_to_bottom()
