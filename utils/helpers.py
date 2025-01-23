@@ -32,9 +32,9 @@ def extract_reference(text):
         >>> extract_reference("BLZ 6472 - Ejemplo")
         'BLZ 6472'
     """
-    match = re.search(r'([A-Z]{3})\s*(\d{3,5})', text, re.IGNORECASE)
+    match = re.search(r'([A-Z]{3})\s*(\d{3,5})', text, re.IGNORECASE) # Busca el patrón en el texto
     if match:
-        return f"{match.group(1).upper()} {match.group(2)}"
+        return f"{match.group(1).upper()} {match.group(2)}" # Devuelve la referencia en formato 'XXX YYYYY'
     return None
 
 def normalize_text(text):

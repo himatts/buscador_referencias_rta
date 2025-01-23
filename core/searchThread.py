@@ -98,7 +98,7 @@ class SearchThread(QThread):
         Método principal que inicia la búsqueda según el tipo especificado.
         Ejecuta la búsqueda por referencia o por nombre de archivo según corresponda.
         """
-        if self.search_type == 'Referencia':
+        if self.search_type == 'Referencia': # Si es referencia, ejecuta la búsqueda por referencia
             self.run_reference_search()
         elif self.search_type == 'Nombre de Archivo':
             self.run_name_search()
@@ -114,14 +114,14 @@ class SearchThread(QThread):
         
         Emite señales de progreso durante la búsqueda y nuevos resultados encontrados.
         """
-        print("Iniciando búsqueda en la base de datos (Referencia)...")
+        print("Iniciando búsqueda en la base de datos (Referencia)...") 
         total_db_references = len(self.text_lines)
-        for idx, text_line in enumerate(self.text_lines):
+        for idx, text_line in enumerate(self.text_lines): # Recorre cada referencia en la lista de referencias
             if self.isInterruptionRequested():
                 break
             
             # Extraer la referencia del texto de búsqueda
-            reference = extract_reference(text_line)
+            reference = extract_reference(text_line) # Extrae la referencia del texto de búsqueda
             search_text = reference if reference else text_line
             
             print(f"Buscando en la base de datos para la referencia: {search_text}")
@@ -158,12 +158,12 @@ class SearchThread(QThread):
 
         print("Iniciando búsqueda en la NAS para referencias...")
         self.processed_directories = 0
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = [executor.submit(self.processPath, path) for path in self.paths]
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor: # Inicia el hilo de búsqueda en la NAS
+            futures = [executor.submit(self.processPath, path) for path in self.paths] # Envía cada ruta a la función processPath
             for future in as_completed(futures):
                 if self.isInterruptionRequested():
                     break
-                future.result()
+                future.result() # Espera a que se complete la tarea
 
     def run_name_search(self):
         """
@@ -456,7 +456,7 @@ class SearchThread(QThread):
         if self.isInterruptionRequested():
             return
         try:
-            first_level_dirs = next(os.walk(path))[1]
+            first_level_dirs = next(os.walk(path))[1] # Obtiene los directorios de primer nivel
             for dir in first_level_dirs:
                 if '@Recycle' in dir:
                     continue

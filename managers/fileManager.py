@@ -9,6 +9,7 @@ Versión: 1.0
 """
 
 import os
+import re
 import shutil
 from PyQt5.QtWidgets import QMessageBox, QFileDialog
 from PyQt5.QtCore import Qt, QUrl
@@ -61,19 +62,21 @@ class FileManager:
     def open_selected(self):
         """Abre las rutas seleccionadas en la tabla de resultados."""
         main_window = self.main_controller.main_window
-        for index in range(main_window.results.topLevelItemCount()):
-            item = main_window.results.topLevelItem(index)
-            if item.checkState(0) == Qt.Checked:
-                path = item.data(6, Qt.UserRole)
-                if path is not None:
-                    if os.path.isfile(path):
-                        folder_path = os.path.dirname(path)
-                        os.startfile(folder_path)
-                    else:
-                        os.startfile(path)
-                else:
-                    print("Error: La ruta es None para el ítem:", item.text(1))
-                    
+        desktop_folder = os.path.join(
+            os.path.expanduser("~"), 
+            "Desktop", 
+            self.main_controller.config.get_desktop_folder_name()
+        )
+        
+        if os.path.exists(desktop_folder):
+            os.startfile(desktop_folder)
+        else:
+            QMessageBox.warning(
+                main_window,
+                "Carpeta no encontrada",
+                f"La carpeta configurada no existe en el escritorio:\n{desktop_folder}"
+            )
+            
     def open_all(self):
         """Abre todas las rutas seleccionadas en el explorador de archivos."""
         main_window = self.main_controller.main_window

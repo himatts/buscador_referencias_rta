@@ -6,12 +6,27 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont
 from datetime import datetime
 import os
+import logging
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('llm_prompts.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 class FileButton(QPushButton):
     """Botón personalizado para archivos y carpetas."""
+    file_selected = pyqtSignal(str, str)  # path, type
+
     def __init__(self, text: str, file_path: str, button_type: str = "default", parent=None):
         super().__init__(text, parent)
         self.file_path = file_path
+        self.button_type = button_type
         self.clicked.connect(self._on_click)
         
         # Estilos base
@@ -69,21 +84,45 @@ class FileButton(QPushButton):
                     background-color: #545b62;
                 }
             """)
+        elif button_type == "choose_rhino":
+            self.setStyleSheet(base_style + """
+                QPushButton {
+                    background-color: #007bff;
+                    color: white;
+                    min-width: 60px;
+                    font-size: 12px;
+                }
+                QPushButton:hover {
+                    background-color: #0056b3;
+                }
+                QPushButton:pressed {
+                    background-color: #004085;
+                }
+            """)
     
     def _on_click(self):
         """Maneja el clic del botón abriendo el archivo o carpeta."""
         try:
-            os.startfile(self.file_path)
+            if self.button_type == "choose_rhino":
+                # Emitir señal para manejar la selección
+                logger.info(f"FileButton: Emitiendo señal de selección para: {self.file_path}")
+                self.file_selected.emit(self.file_path, self.button_type)
+            else:
+                # Comportamiento normal de abrir archivo/carpeta
+                os.startfile(self.file_path)
         except Exception as e:
-            print(f"Error al abrir {self.file_path}: {str(e)}")
+            logger.error(f"Error al manejar {self.file_path}: {str(e)}")
 
 class MessageBubble(QFrame):
     """Widget personalizado para representar un mensaje en el chat."""
+    file_selected = pyqtSignal(str, str)  # path, type
+
     def __init__(self, sender: str, message: str, timestamp: str,
                  is_error: bool = False, parent=None):
         super().__init__(parent)
         self.sender = sender
         self.is_user = (sender.lower() == "usuario")
+        self.buttons = []  # Lista para mantener referencia a los botones
 
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Plain)
         self.setLineWidth(1)
@@ -164,6 +203,9 @@ class MessageBubble(QFrame):
         # Dividir el mensaje en partes
         parts = message.split("<file_button>")
         
+        # Contenedor para botones de acción
+        action_buttons_container = None
+        
         for i, part in enumerate(parts):
             if i == 0:
                 if part.strip():
@@ -199,11 +241,18 @@ class MessageBubble(QFrame):
             button_info, remaining_text = part.split("</file_button>", 1)
             try:
                 button_data = eval(button_info)  # Convierte el string a diccionario
+                logger.debug(f"Creando botón: {button_data}")
+                
                 button = FileButton(
                     text=button_data['text'],
                     file_path=button_data['path'],
                     button_type=button_data['type']
                 )
+                
+                # Conectar señal de selección de archivo y mantener referencia
+                button.file_selected.connect(self.file_selected)
+                self.buttons.append(button)  # Mantener referencia al botón
+                logger.debug(f"Señal conectada para botón: {button_data['type']}")
                 
                 # Crear contenedor horizontal para el botón
                 button_container = QWidget()
@@ -220,7 +269,7 @@ class MessageBubble(QFrame):
                 
                 layout.addWidget(button_container)
             except Exception as e:
-                print(f"Error procesando botón: {str(e)}")
+                logger.error(f"Error procesando botón: {str(e)}")
 
             # Procesar el texto restante
             if remaining_text.strip():
@@ -250,14 +299,59 @@ class MessageBubble(QFrame):
                                 }}
                             """)
                             layout.addWidget(label)
+                            
+        # Añadir botón "No elegir ninguno" si hay botones de selección de Rhino
+        if any("choose_rhino" in str(part) for part in parts[1:]):
+            skip_button = QPushButton("No elegir ninguno")
+            skip_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #6c757d;
+                    color: white;
+                    min-width: 60px;
+                    font-size: 12px;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    border: none;
+                    margin: 2px;
+                }
+                QPushButton:hover {
+                    background-color: #5a6268;
+                }
+                QPushButton:pressed {
+                    background-color: #545b62;
+                }
+            """)
+            # Conectar directamente sin lambda
+            skip_button.clicked.connect(self._on_skip_button_clicked)
+            self.buttons.append(skip_button)  # Mantener referencia al botón
+            logger.debug("Botón 'No elegir ninguno' creado y conectado")
+            
+            skip_container = QWidget()
+            skip_layout = QHBoxLayout(skip_container)
+            skip_layout.setContentsMargins(0, 10, 0, 0)
+            skip_layout.addStretch()
+            skip_layout.addWidget(skip_button)
+            skip_layout.addStretch()
+            
+            layout.addWidget(skip_container)
+
+    def _on_skip_button_clicked(self):
+        """Maneja el clic en el botón de 'No elegir ninguno'."""
+        logger.info("MessageBubble: Botón 'No elegir ninguno' presionado")
+        self.file_selected.emit("", "skip_rhino")
 
 class ChatPanel(QWidget):
     """Panel de chat con interacción mediante botones."""
-    # Si ya no usas mensajes de texto directo, puedes eliminar esta señal
+    # Señales
     message_sent = pyqtSignal(str)
+    file_selected = pyqtSignal(str, str)  # path, type
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # Inicializar contadores de tokens
+        self.input_tokens = 0
+        self.output_tokens = 0
 
         # Estilo genérico de botones
         self.button_style = """
@@ -357,6 +451,19 @@ class ChatPanel(QWidget):
         """)
         layout.addWidget(self.cost_label)
 
+        # Etiqueta de tokens
+        self.tokens_label = QLabel("Tokens: 0 entrada / 0 salida")
+        self.tokens_label.setAlignment(Qt.AlignRight)
+        self.tokens_label.setStyleSheet("""
+            QLabel {
+                color: #666666;
+                font-size: 11px;
+                padding: 2px;
+                font-style: italic;
+            }
+        """)
+        layout.addWidget(self.tokens_label)
+
         self.setStyleSheet("""
             ChatPanel {
                 background-color: #ffffff;
@@ -369,6 +476,9 @@ class ChatPanel(QWidget):
         """Agrega una burbuja de mensaje al panel de chat."""
         current_time = datetime.now().strftime("%H:%M")
         bubble = MessageBubble(sender, message, current_time, is_error, self.messages_container)
+        
+        # Conectar señal de selección de archivo
+        bubble.file_selected.connect(self._handle_file_selection)
 
         container = QWidget()
         container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
@@ -398,6 +508,11 @@ class ChatPanel(QWidget):
         QTimer.singleShot(0, lambda: self._update_bubble_sizes())
         
         self._scroll_to_bottom()
+
+    def _handle_file_selection(self, file_path: str, selection_type: str):
+        """Maneja la selección de archivos y la reenvía."""
+        logger.info(f"ChatPanel: Recibida selección de archivo - Path: {file_path}, Type: {selection_type}")
+        self.file_selected.emit(file_path, selection_type)
 
     def _update_bubble_sizes(self):
         """Actualiza el tamaño de todas las burbujas."""
@@ -499,6 +614,9 @@ class ChatPanel(QWidget):
 
         self.typing_label.clear()
         self.cost_label.setText("Costo de la interacción: $0.00")
+        self.tokens_label.setText("Tokens: 0 entrada / 0 salida")
+        self.input_tokens = 0
+        self.output_tokens = 0
 
     def set_typing_status(self, is_typing: bool):
         """Muestra u oculta el indicador de 'escribiendo...'."""
@@ -535,3 +653,25 @@ class ChatPanel(QWidget):
             if isinstance(child, MessageBubble):
                 return True
         return False
+
+    def update_tokens(self, input_tokens: int, output_tokens: int):
+        """
+        Actualiza el contador de tokens mostrado.
+        
+        Args:
+            input_tokens: Total de tokens de entrada acumulados
+            output_tokens: Total de tokens de salida acumulados
+        """
+        # Actualizar los totales
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        
+        # Formatear números con separadores de miles
+        formatted_input = f"{input_tokens:,}".replace(",", ".")
+        formatted_output = f"{output_tokens:,}".replace(",", ".")
+        total_tokens = f"{(input_tokens + output_tokens):,}".replace(",", ".")
+        
+        # Actualizar el label con el formato: "Tokens totales: X.XXX (Entrada: Y.YYY | Salida: Z.ZZZ)"
+        self.tokens_label.setText(
+            f"Tokens totales: {total_tokens} (Entrada: {formatted_input} | Salida: {formatted_output})"
+        )

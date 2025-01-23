@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QLabel, QProgressBar, QMessageBox, QAbstractItemView,
     QTreeWidgetItem, QTreeWidget, QHeaderView, QSizePolicy, QMenu, QSplashScreen,
     QGroupBox, QRadioButton, QLineEdit, QCommandLinkButton, QFrame, QButtonGroup,
-    QSplitter
+    QSplitter, QDesktopWidget
 )
 from PyQt5.QtCore import Qt, QEvent, QUrl, QSize
 from PyQt5.QtGui import (
@@ -83,9 +83,11 @@ class App(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        self.resize(1200, 850)
+        self.base_width = 1200
+        self.chat_width = 500  # Ancho inicial del panel de chat
+        self.resize(self.base_width, 850)
 
-        # Layout principal dividido en dos columnas
+        # Layout principal dividido en columnas
         main_layout = QHBoxLayout(central_widget)
         left_column_layout = QVBoxLayout()
         right_column_widget = QWidget()
@@ -108,13 +110,16 @@ class App(QMainWindow):
         self.right_splitter.addWidget(self.chat_panel)
         
         # Configurar proporciones del splitter
-        self.right_splitter.setStretchFactor(0, 70)  # 70% para el contenido principal
-        self.right_splitter.setStretchFactor(1, 30)  # 30% para el chat
+        self.right_splitter.setStretchFactor(0, 50)  # 50% para el contenido principal
+        self.right_splitter.setStretchFactor(1, 50)  # 50% para el chat
         
         right_column_layout.addWidget(self.right_splitter)
         
         main_layout.addLayout(left_column_layout, 35)
         main_layout.addWidget(right_column_widget, 65)
+
+        # Centrar la ventana en la pantalla
+        self.center_window()
 
         # 1.1 Selección del Tipo de Búsqueda
         search_type_group = QGroupBox("Seleccione el tipo de búsqueda:")
@@ -582,4 +587,23 @@ class App(QMainWindow):
         Muestra u oculta el panel de chat según corresponda.
         """
         self.controller.toggle_search_buttons(button)
-        self.chat_panel.setVisible(button.isChecked())
+        
+        # Mostrar/ocultar el panel de chat y ajustar el tamaño de la ventana
+        if button.isChecked():
+            self.chat_panel.show()
+            new_width = self.base_width + self.chat_width
+            self.resize(new_width, self.height())
+            self.center_window()
+        else:
+            self.chat_panel.hide()
+            self.resize(self.base_width, self.height())
+            self.center_window()
+
+    def center_window(self):
+        """Centra la ventana en la pantalla."""
+        screen = QDesktopWidget().screenGeometry()
+        window = self.geometry()
+        self.move(
+            (screen.width() - window.width()) // 2,
+            (screen.height() - window.height()) // 2
+        )

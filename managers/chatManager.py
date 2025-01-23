@@ -13,8 +13,19 @@ from utils.llm_manager import LLMManager
 from typing import Dict, List, Optional
 import os
 import logging
+import json
+from datetime import datetime
+import shutil
 
 # Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('llm_prompts.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 class ChatError(Exception):
@@ -49,6 +60,7 @@ class ChatManager(QObject):
     ESTADO_BUSCAR_SHEETS = "buscar_sheets"
     ESTADO_CONFIRMAR_NOMBRES = "confirmar_nombres"
     ESTADO_CREAR_CARPETAS = "crear_carpetas"
+    ESTADO_SELECCIONAR_RHINO = "seleccionar_rhino"
     ESTADO_ERROR = "error"
     ESTADO_FINALIZADO = "finalizado"
     
@@ -72,6 +84,7 @@ class ChatManager(QObject):
         self.current_step = self.ESTADO_INICIAL
         self.step_context = {}
         self.error_recovery_attempts = {}
+        self.pending_rhino_selection = None  # Para almacenar la referencia pendiente de selección de Rhino
         
     def _handle_error(self, error: Exception) -> str:
         """
@@ -136,11 +149,13 @@ class ChatManager(QObject):
             self.ESTADO_INICIAL: [self.ESTADO_VERIFICAR_REFERENCIAS, self.ESTADO_ERROR],
             self.ESTADO_VERIFICAR_REFERENCIAS: [self.ESTADO_BUSCAR_SHEETS, self.ESTADO_ERROR, self.ESTADO_FINALIZADO],
             self.ESTADO_BUSCAR_SHEETS: [self.ESTADO_CREAR_CARPETAS, self.ESTADO_ERROR, self.ESTADO_FINALIZADO],
-            self.ESTADO_CREAR_CARPETAS: [self.ESTADO_FINALIZADO, self.ESTADO_ERROR],
+            self.ESTADO_CREAR_CARPETAS: [self.ESTADO_SELECCIONAR_RHINO, self.ESTADO_FINALIZADO, self.ESTADO_ERROR],
+            self.ESTADO_SELECCIONAR_RHINO: [self.ESTADO_CREAR_CARPETAS, self.ESTADO_FINALIZADO, self.ESTADO_ERROR],
             self.ESTADO_ERROR: [
                 self.ESTADO_VERIFICAR_REFERENCIAS,
                 self.ESTADO_BUSCAR_SHEETS,
                 self.ESTADO_CREAR_CARPETAS,
+                self.ESTADO_SELECCIONAR_RHINO,
                 self.ESTADO_FINALIZADO
             ],
             self.ESTADO_FINALIZADO: []
@@ -182,6 +197,11 @@ class ChatManager(QObject):
             self.error_recovery_attempts = {}
             self.current_step = self.ESTADO_INICIAL
             
+            # Reiniciar contadores de tokens
+            self.llm_manager.total_input_tokens = 0
+            self.llm_manager.total_output_tokens = 0
+            self.controller.main_window.chat_panel.update_tokens(0, 0)
+            
             # Mensaje inicial del sistema
             welcome_message = (
                 "¡Hola! Soy el asistente de RTA y te ayudaré en el proceso de "
@@ -201,68 +221,214 @@ class ChatManager(QObject):
             self.llm_response.emit("Sistema", error_msg, True)
             self.error_occurred.emit("inicio", str(e))
         
+    def _update_tokens_display(self):
+        """Actualiza la visualización de tokens en la interfaz."""
+        input_tokens, output_tokens = self.llm_manager.get_token_counts()
+        self.controller.main_window.chat_panel.update_tokens(input_tokens, output_tokens)
+        logger.info(f"Tokens actualizados - Entrada: {input_tokens}, Salida: {output_tokens}")
+
     def handle_user_message(self, message: str):
         """
-        Procesa un mensaje del usuario.
-        
-        Args:
-            message: Contenido del mensaje del usuario
+        Maneja los mensajes del usuario, incluyendo la selección de archivos Rhino alternativos.
         """
-        # Guardar el mensaje en el historial
-        self.conversation_history.append(("usuario", message))
-        
-        # Indicar que el LLM está procesando
-        self.typing_status_changed.emit(True)
-        
         try:
-            # Procesar el mensaje según el paso actual
-            response, cost = self.llm_manager.process_folder_creation_decision(
-                self.current_step,
-                self.step_context,
-                message
-            )
-            
-            # Analizar la respuesta y tomar acción
-            if "continuar" in response.lower():
-                if self.current_step == "verificar_referencias":
-                    self._transition_to_step("buscar_sheets")
-                    self.llm_response.emit(
-                        "Sistema",
-                        "Excelente. Procederé a buscar la información en Google Sheets.",
-                        False
-                    )
-                    self.process_next_step()
-                elif self.current_step == "confirmar_nombres":
-                    self._transition_to_step("crear_carpetas")
-                    self.llm_response.emit(
-                        "Sistema",
-                        "Perfecto. Comenzaré a crear las carpetas y copiar los archivos.",
-                        False
-                    )
-                    self.process_next_step()
-            else:
-                # Si no se debe continuar, mostrar la respuesta del LLM
-                self.llm_response.emit("LLM", response, False)
+            # Si el mensaje es un botón de archivo
+            if message.startswith("<file_button>"):
+                button_info = message[len("<file_button>"):-len("</file_button>")]
+                button_data = eval(button_info)
                 
-            # Actualizar el costo en la interfaz
-            self.controller.main_window.chat_panel.update_cost(
-                self.llm_manager.get_session_cost()
-            )
+                # Si es una selección de archivo Rhino alternativo
+                if button_data.get("type") == "choose_rhino":
+                    chosen_path = button_data.get("path")
+                    if chosen_path and os.path.exists(chosen_path):
+                        # Obtener la carpeta destino del contexto actual
+                        target_folder = self.step_context.get("target_folder")
+                        if target_folder:
+                            # Copiar el archivo Rhino seleccionado
+                            rhino_name = os.path.basename(chosen_path).upper()
+                            rhino_target = os.path.join(target_folder, rhino_name)
+                            shutil.copy2(chosen_path, rhino_target)
+                            
+                            # Actualizar el resultado en el contexto
+                            if "copy_results" in self.step_context:
+                                self.step_context["copy_results"]["rhino"] = rhino_name
+                                # Eliminar el error de "No se encontraron archivos Rhino" si existe
+                                if "errors" in self.step_context["copy_results"]:
+                                    self.step_context["copy_results"]["errors"] = [
+                                        err for err in self.step_context["copy_results"]["errors"]
+                                        if "No se encontraron archivos Rhino" not in err
+                                    ]
+                            
+                            # Marcar que ya no estamos esperando selección
+                            self.step_context["waiting_for_rhino"] = False
+                        
+                        # Notificar al usuario
+                        self.llm_response.emit(
+                            "Sistema",
+                            f"✅ Archivo Rhino {rhino_name} copiado exitosamente a la carpeta destino.",
+                            False
+                        )
+                        
+                        # Continuar con el siguiente paso
+                        self.process_next_step()
+                    else:
+                        self.llm_response.emit(
+                            "Sistema",
+                            "❌ Error: No se pudo copiar el archivo porque no se encontró la carpeta destino.",
+                            True
+                        )
+                else:
+                    self.llm_response.emit(
+                        "Sistema",
+                        "❌ Error: El archivo seleccionado no existe o no es accesible.",
+                        True
+                    )
+                return
+
+            # Guardar el mensaje en el historial
+            self.conversation_history.append(("usuario", message))
+            
+            # Indicar que el LLM está procesando
+            self.typing_status_changed.emit(True)
+            
+            try:
+                # Procesar el mensaje según el paso actual
+                response, cost = self.llm_manager.process_folder_creation_decision(
+                    self.current_step,
+                    self.step_context,
+                    message
+                )
+                
+                # Actualizar tokens y costo en la UI
+                self._update_tokens_display()
+                self.controller.main_window.chat_panel.update_cost(
+                    self.llm_manager.get_session_cost()
+                )
+                
+                # Analizar la respuesta y tomar acción
+                if "continuar" in response.lower():
+                    if self.current_step == "verificar_referencias":
+                        self._transition_to_step("buscar_sheets")
+                        self.llm_response.emit(
+                            "Sistema",
+                            "Excelente. Procederé a buscar la información en Google Sheets.",
+                            False
+                        )
+                        self.process_next_step()
+                    elif self.current_step == "confirmar_nombres":
+                        self._transition_to_step("crear_carpetas")
+                        self.llm_response.emit(
+                            "Sistema",
+                            "Perfecto. Comenzaré a crear las carpetas y copiar los archivos.",
+                            False
+                        )
+                        self.process_next_step()
+                else:
+                    # Si no se debe continuar, mostrar la respuesta del LLM
+                    self.llm_response.emit("LLM", response, False)
+                    
+            except Exception as e:
+                error_msg = self._handle_error(e)
+                self.llm_response.emit("Sistema", error_msg, True)
+                self.error_occurred.emit("mensaje_usuario", str(e))
+                
+            finally:
+                # Indicar que el LLM terminó de procesar
+                self.typing_status_changed.emit(False)
                 
         except Exception as e:
             error_msg = self._handle_error(e)
             self.llm_response.emit("Sistema", error_msg, True)
-            self.error_occurred.emit("mensaje_usuario", str(e))
+            self.error_occurred.emit(self.current_step, str(e))
+            self._transition_to_step(self.ESTADO_ERROR)
+
+    def handle_file_selection(self, file_path: str, selection_type: str):
+        """
+        Maneja la selección de archivos desde los botones del chat.
+        
+        Args:
+            file_path: Ruta del archivo seleccionado
+            selection_type: Tipo de selección ('choose_rhino', 'skip_rhino', etc.)
+        """
+        try:
+            logger.info(f"ChatManager: Recibida selección - Path: {file_path}, Type: {selection_type}")
             
-        finally:
-            # Indicar que el LLM terminó de procesar
-            self.typing_status_changed.emit(False)
-            
+            if self.current_step != self.ESTADO_SELECCIONAR_RHINO:
+                logger.warning(f"Selección recibida en estado inválido: {self.current_step}")
+                return
+                
+            if not self.pending_rhino_selection:
+                logger.warning("No hay selección de Rhino pendiente")
+                return
+
+            ref_data = self.pending_rhino_selection
+            original_ref = ref_data.get('original')
+            logger.info(f"Procesando selección para referencia: {original_ref}")
+
+            if selection_type == 'choose_rhino' and file_path and os.path.exists(file_path):
+                # Completar la creación de carpetas con el archivo seleccionado
+                logger.info(f"Completando creación con archivo seleccionado: {file_path}")
+                results = self.controller.folder_creation_manager.complete_folder_creation(
+                    ref_key=original_ref,
+                    selected_rhino=file_path
+                )
+                
+                if results["errors"]:
+                    # Si hay errores, mostrarlos
+                    error_msg = "\n".join(error.replace('**', '') for error in results["errors"])
+                    logger.error(f"Errores en creación: {error_msg}")
+                    self.llm_response.emit(
+                        "Sistema",
+                        f"❌ Error al crear carpeta: {error_msg}",
+                        True
+                    )
+                else:
+                    logger.info("Creación completada exitosamente")
+                    # Mostrar resumen de la carpeta creada
+                    self._show_final_summary(results)
+                
+            elif selection_type == 'skip_rhino':
+                # Completar la creación de carpetas sin archivo Rhino
+                logger.info("Completando creación sin archivo Rhino")
+                results = self.controller.folder_creation_manager.complete_folder_creation(
+                    ref_key=original_ref,
+                    selected_rhino=None
+                )
+                
+                if results["errors"]:
+                    error_msg = "\n".join(error.replace('**', '') for error in results["errors"])
+                    logger.error(f"Errores en creación: {error_msg}")
+                    self.llm_response.emit(
+                        "Sistema",
+                        f"❌ Error al crear carpeta: {error_msg}",
+                        True
+                    )
+                else:
+                    logger.info("Creación completada exitosamente")
+                    self._show_final_summary(results)
+
+            # Limpiar la selección pendiente y continuar con el proceso
+            self.pending_rhino_selection = None
+            self._transition_to_step(self.ESTADO_FINALIZADO)
+            logger.info("Proceso de selección completado")
+
+        except Exception as e:
+            logger.error(f"Error al manejar selección de archivo: {str(e)}")
+            error_msg = self._handle_error(e)
+            self.llm_response.emit("Sistema", error_msg, True)
+            self.error_occurred.emit("seleccion_archivo", str(e))
+            self._transition_to_step(self.ESTADO_ERROR)
+
     def process_next_step(self):
         """
         Procesa el siguiente paso en el flujo de creación de carpetas.
         """
         try:
+            # Si estamos esperando la selección de un archivo Rhino, no continuar
+            if self.current_step == self.ESTADO_SELECCIONAR_RHINO and self.pending_rhino_selection:
+                logger.info("Esperando selección de archivo Rhino")
+                return
+
             if self.current_step == self.ESTADO_VERIFICAR_REFERENCIAS:
                 # Obtener resultados de la búsqueda en base de datos
                 db_results = self.controller.folder_creation_manager.search_in_database_only(self.current_references)
@@ -339,6 +505,10 @@ class ChatManager(QObject):
                 ]
                 self.controller.main_window.chat_panel.show_action_buttons(actions)
                 
+                # Actualizar tokens después de la operación
+                input_tokens, output_tokens = self.llm_manager.get_token_counts()
+                self.controller.main_window.chat_panel.update_tokens(input_tokens, output_tokens)
+                
             elif self.current_step == self.ESTADO_BUSCAR_SHEETS:
                 # Buscar en Google Sheets y formatear nombres
                 try:
@@ -414,6 +584,11 @@ class ChatManager(QObject):
                             }
                         ]
                         self.controller.main_window.chat_panel.show_action_buttons(actions)
+                        
+                        # Actualizar tokens después de la operación
+                        input_tokens, output_tokens = self.llm_manager.get_token_counts()
+                        self.controller.main_window.chat_panel.update_tokens(input_tokens, output_tokens)
+                        
                     else:
                         error_message = "No se pudo formatear ninguna referencia correctamente.<br><br>"
                         if refs_with_errors:
@@ -433,7 +608,6 @@ class ChatManager(QObject):
                     )
                     
             elif self.current_step == self.ESTADO_CREAR_CARPETAS:
-                # Crear carpetas y copiar archivos
                 try:
                     # Preparar las referencias en el formato correcto
                     formatted_refs_for_creation = []
@@ -448,65 +622,33 @@ class ChatManager(QObject):
                         self.step_context.get('db_results', {})
                     )
                     
-                    # Generar mensaje de resumen
-                    message = "Se han creado las carpetas y se han copiado los archivos:"
+                    # Si hay archivos pendientes de selección
+                    if results.get("pending_files"):
+                        # Guardar información en el contexto
+                        self.step_context["pending_files"] = results["pending_files"]
+                        
+                        # Tomar la primera referencia pendiente
+                        ref_key = next(iter(results["pending_files"]))
+                        self.pending_rhino_selection = {
+                            "original": ref_key,
+                            **results["pending_files"][ref_key]
+                        }
+                        
+                        self._transition_to_step(self.ESTADO_SELECCIONAR_RHINO)
+                        return
                     
+                    # Si no hay archivos pendientes, mostrar el resumen final
                     if results["processed"]:
-                        for i, ref in enumerate(results["processed"]):
-                            message += "\n\n"  # Separación entre referencias
-                            
-                            if i > 0:
-                                message += "---\n\n"  # Divisor entre referencias
-                            
-                            # Crear botón de carpeta
-                            folder_button = {
-                                'text': f"📁 {ref['original']}",
-                                'path': ref['target_folder'],
-                                'type': 'folder'
-                            }
-                            message += f"<file_button>{folder_button}</file_button>"
-                            
-                            if ref['copied_files'].get('pdf'):
-                                pdf_path = os.path.join(ref["target_folder"], ref['copied_files']["pdf"])
-                                pdf_button = {
-                                    'text': f"📄 {ref['copied_files']['pdf']}",
-                                    'path': pdf_path,
-                                    'type': 'pdf',
-                                    'indent': True
-                                }
-                                message += f"\n<file_button>{pdf_button}</file_button>"
-                                
-                            if ref['copied_files'].get('rhino'):
-                                rhino_path = os.path.join(ref["target_folder"], ref['copied_files']["rhino"])
-                                rhino_button = {
-                                    'text': f"🔧 {ref['copied_files']['rhino']}",
-                                    'path': rhino_path,
-                                    'type': 'rhino',
-                                    'indent': True
-                                }
-                                message += f"\n<file_button>{rhino_button}</file_button>"
-                    
-                    if results["errors"]:
-                        message += "\n\nErrores encontrados:\n"
-                        for error in results["errors"]:
-                            message += f'• {error}\n'
-                    
-                    self.llm_response.emit("Sistema", message, False)
-                    
-                    # Mostrar botón para abrir carpeta
-                    if results["processed"]:
-                        # Obtener la carpeta padre (2 niveles arriba)
-                        parent_folder = os.path.dirname(os.path.dirname(results["processed"][0]['target_folder']))
-                        actions = [
-                            {
-                                'text': 'Abrir Carpeta',
-                                'callback': lambda: self._open_result_folder(parent_folder)
-                            }
-                        ]
-                        self.controller.main_window.chat_panel.show_action_buttons(actions)
-                    
-                    self._transition_to_step(self.ESTADO_FINALIZADO)
-                    
+                        self._show_final_summary(results)
+                        self._transition_to_step(self.ESTADO_FINALIZADO)
+                    else:
+                        self.llm_response.emit(
+                            "Sistema",
+                            "No se pudo procesar ninguna referencia correctamente.",
+                            True
+                        )
+                        self._transition_to_step(self.ESTADO_ERROR)
+
                 except Exception as e:
                     logger.error(f"Error al crear carpetas: {str(e)}")
                     raise ProcessStepError(
@@ -547,3 +689,66 @@ class ChatManager(QObject):
             os.startfile(folder_path)
         except Exception as e:
             self.llm_response.emit("Sistema", f"Error al abrir la carpeta: {str(e)}", True) 
+
+    def _show_final_summary(self, results: Dict):
+        """
+        Muestra el resumen final del proceso de creación de carpetas.
+        
+        Args:
+            results: Diccionario con los resultados del proceso
+        """
+        message = "Se han creado las carpetas y se han copiado los archivos:"
+        
+        if results["processed"]:
+            for i, ref in enumerate(results["processed"]):
+                message += "\n\n"  # Separación entre referencias
+                
+                if i > 0:
+                    message += "---\n\n"  # Divisor entre referencias
+                
+                # Crear botón de carpeta
+                folder_button = {
+                    'text': f"📁 {ref['original']}",
+                    'path': ref['target_folder'],
+                    'type': 'folder'
+                }
+                message += f"<file_button>{folder_button}</file_button>"
+                
+                if ref['copied_files'].get('pdf'):
+                    pdf_path = os.path.join(ref["target_folder"], ref['copied_files']["pdf"])
+                    pdf_button = {
+                        'text': f"📄 {ref['copied_files']['pdf']}",
+                        'path': pdf_path,
+                        'type': 'pdf',
+                        'indent': True
+                    }
+                    message += f"\n<file_button>{pdf_button}</file_button>"
+                    
+                if ref['copied_files'].get('rhino'):
+                    rhino_path = os.path.join(ref["target_folder"], ref['copied_files']["rhino"])
+                    rhino_button = {
+                        'text': f"🔧 {ref['copied_files']['rhino']}",
+                        'path': rhino_path,
+                        'type': 'rhino',
+                        'indent': True
+                    }
+                    message += f"\n<file_button>{rhino_button}</file_button>"
+        
+        if results["errors"]:
+            message += "\n\nErrores encontrados:\n"
+            for error in results["errors"]:
+                message += f'• {error}\n'
+        
+        self.llm_response.emit("Sistema", message, False)
+        
+        # Mostrar botón para abrir carpeta
+        if results["processed"]:
+            # Obtener la carpeta padre (2 niveles arriba)
+            parent_folder = os.path.dirname(os.path.dirname(results["processed"][0]['target_folder']))
+            actions = [
+                {
+                    'text': 'Abrir Carpeta',
+                    'callback': lambda: self._open_result_folder(parent_folder)
+                }
+            ]
+            self.controller.main_window.chat_panel.show_action_buttons(actions) 

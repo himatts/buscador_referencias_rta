@@ -24,6 +24,16 @@ from managers.chatManager import ChatManager
 from utils.config import Config
 from ui.configDialog import ConfigDialog
 import os
+import logging
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
 
 class MainWindowController(QObject):
     """
@@ -62,6 +72,17 @@ class MainWindowController(QObject):
         self.searched_refs = set()
         self.action_history = []
         self.custom_extensions = []
+
+        # Inicializar el chat_manager
+        self.chat_manager = ChatManager(self)
+        
+        # Conectar señales después de inicializar chat_manager
+        if hasattr(self.main_window, 'chat_panel') and self.main_window.chat_panel is not None:
+            self.main_window.chat_panel.file_selected.connect(self.chat_manager.handle_file_selection)
+            logger.info("Señal file_selected conectada entre ChatPanel y ChatManager")
+        
+        # Mostrar la ventana
+        self.main_window.show()
 
     def show_config_dialog(self):
         """Muestra el diálogo de configuración."""
@@ -109,10 +130,12 @@ class MainWindowController(QObject):
                     )
                     return
                     
+                # Inicializar el manager de creación de carpetas
                 self.folder_creation_manager = ReferenceFolderCreationManager(
                     credentials_path,
                     google_sheet_key,
-                    desktop_folder_name=self.config.get_desktop_folder_name()
+                    desktop_folder_name=self.config.get_desktop_folder_name(), # Nombre de la carpeta en el escritorio
+                    controller=self # Referencia al controlador principal
                 )
                 
             if not self.chat_manager:
@@ -138,6 +161,14 @@ class MainWindowController(QObject):
             self.main_window.chat_panel.message_sent.connect(self.chat_manager.handle_user_message)
             self.chat_manager.llm_response.connect(self.main_window.chat_panel.append_message)
             self.chat_manager.typing_status_changed.connect(self.main_window.chat_panel.set_typing_status)
+            
+            # Conectar señal de selección de archivo si no está conectada
+            try:
+                self.main_window.chat_panel.file_selected.disconnect(self.chat_manager.handle_file_selection)
+            except:
+                pass
+            self.main_window.chat_panel.file_selected.connect(self.chat_manager.handle_file_selection)
+            logger.info("Señal file_selected reconectada en modo creación de carpetas")
             
             # 5. Limpiar el chat y comenzar el proceso
             self.main_window.chat_panel.clear_chat()
@@ -383,3 +414,16 @@ class MainWindowController(QObject):
             lambda: self.file_manager.open_folder(self.main_window.results.currentItem())
         )
         menu.exec_(self.main_window.results.viewport().mapToGlobal(position))
+
+    def _handle_llm_response(self, response_text: str, cost: float):
+        """Maneja la respuesta del LLM y actualiza la UI."""
+        # Actualizar el costo
+        self.chat_panel.update_cost(cost)
+        
+        # Obtener y actualizar los tokens
+        input_tokens, output_tokens = self.llm_manager.get_token_counts()
+        self.chat_panel.update_tokens(input_tokens, output_tokens)
+        
+        # Mostrar la respuesta en el chat
+        self.chat_panel.append_message("Asistente", response_text)
+        self.chat_panel.set_typing_status(False)

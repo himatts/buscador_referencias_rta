@@ -13,7 +13,15 @@ from utils.helpers import normalize_text
 from utils.llm_manager import LLMManager
 
 # Configurar logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.FileHandler('llm_prompts.log', mode='a', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 class ReferenceFolderCreationManager:
@@ -31,7 +39,8 @@ class ReferenceFolderCreationManager:
     def __init__(self, 
                  google_credentials_path: str,
                  google_sheet_key: str,
-                 desktop_folder_name: str = "PEDIDOS MERCADEO"):
+                 desktop_folder_name: str = "PEDIDOS MERCADEO",
+                 controller=None):
         """
         Inicializa el gestor.
 
@@ -39,10 +48,12 @@ class ReferenceFolderCreationManager:
             google_credentials_path: Ruta al archivo JSON de credenciales de servicio
             google_sheet_key: ID de la hoja de Google Sheets
             desktop_folder_name: Nombre de la carpeta a crear en el escritorio
+            controller: Referencia al controlador principal
         """
         self.google_credentials_path = google_credentials_path
         self.google_sheet_key = google_sheet_key
         self.desktop_folder_name = desktop_folder_name
+        self.controller = controller
         self.gc = None
         self.llm = LLMManager()
         
@@ -74,15 +85,14 @@ class ReferenceFolderCreationManager:
         Returns:
             Dict con las rutas encontradas por referencia
         """
-        logger.info(f"Iniciando búsqueda en base de datos para {len(references)} referencias")
+        logger.info("=== INICIO BÚSQUEDA EN BASE DE DATOS ===")
         results = {}
-        
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
             
             for ref in references:
-                logger.debug(f"Buscando en BD: {ref}")
+                logger.info(f"Buscando referencia: {ref}")
                 normalized_ref = normalize_text(ref)
                 
                 query = """
@@ -93,7 +103,8 @@ class ReferenceFolderCreationManager:
                     ORDER BY 
                         CASE 
                             WHEN LOWER(path) LIKE '%instructivo%' THEN 1
-                            ELSE 2
+                            WHEN LOWER(path) LIKE '%\\nube\\%' THEN 2
+                            ELSE 3
                         END,
                         path
                 """
@@ -103,16 +114,16 @@ class ReferenceFolderCreationManager:
                 
                 if paths:
                     results[ref] = [path[0] for path in paths]
-                    logger.info(f"Encontradas {len(paths)} rutas para {ref}")
+                    logger.info(f"✓ Encontradas {len(paths)} rutas")
                 else:
                     results[ref] = []
-                    logger.warning(f"No se encontraron rutas para {ref}")
+                    logger.warning(f"✗ No se encontraron rutas")
             
+            logger.info("=== FIN BÚSQUEDA EN BASE DE DATOS ===")
             return results
             
         except Exception as e:
-            error_msg = f"Error en búsqueda de base de datos: {str(e)}"
-            logger.error(error_msg)
+            logger.error(f"Error en búsqueda: {str(e)}")
             raise
             
         finally:
@@ -129,107 +140,306 @@ class ReferenceFolderCreationManager:
         Returns:
             Lista de diccionarios con la información formateada
         """
+        logger.info("=== INICIO BÚSQUEDA EN GOOGLE SHEETS ===")
         if not self.gc:
+            logger.info("Iniciando autenticación con Google Sheets")
             self._authenticate_google_sheets()
             
-        logger.info(f"Procesando {len(references)} referencias en Google Sheets")
         formatted_refs = []
         
-        for ref in references:
-            try:
-                # Obtener datos de Google Sheets
-                code_3_letters, consecutivo, description, category = self._fetch_reference_data(ref)
-                
-                # Formatear nombre
-                final_name = self._format_reference_name(
-                    code_3_letters=code_3_letters,
-                    consecutivo=consecutivo,
-                    description=description
-                )
-                
-                formatted_refs.append({
-                    'original': ref,
-                    'code': code_3_letters,
-                    'consecutivo': consecutivo,
-                    'category': category,
-                    'nombre_formateado': final_name
-                })
-                
-                logger.info(f"Referencia {ref} formateada como: {final_name}")
-                
-            except Exception as e:
-                logger.error(f"Error procesando {ref} en Sheets: {str(e)}")
-                formatted_refs.append({
-                    'original': ref,
-                    'error': str(e)
-                })
-                
-        return formatted_refs
+        try:
+            sheet = self.gc.open_by_key(self.google_sheet_key)
+            worksheet = sheet.worksheet('REFERENCIAS 1-2-3-4')
+            all_values = worksheet.get_all_values()
+            logger.info(f"Datos obtenidos: {len(all_values)} filas")
+            
+            for ref in references:
+                logger.info(f"\nProcesando referencia: {ref}")
+                try:
+                    numeric_match = re.search(r"\d{3,5}", ref)
+                    if not numeric_match:
+                        logger.error(f"✗ No se encontró parte numérica")
+                        formatted_refs.append({
+                            'original': ref,
+                            'error': "No se encontró parte numérica en la referencia"
+                        })
+                        continue
+                        
+                    numeric_str = numeric_match.group(0)
+                    
+                    found_row = None
+                    found_index = -1
+                    
+                    for i, row in enumerate(all_values, 1):
+                        if len(row) >= 5 and row[4].strip() == numeric_str:
+                            found_row = row
+                            found_index = i
+                            break
+                    
+                    if found_row:
+                        logger.info(f"✓ Coincidencia encontrada")
+                        
+                        try:
+                            code_3_letters = found_row[3].strip()
+                            consecutivo = found_row[4].strip()
+                            description = found_row[5].strip()
+                            category = found_row[7].strip()
+                            
+                            logger.info("Datos extraídos correctamente")
+                            
+                            formatted_name = self._format_reference_name(
+                                code_3_letters=code_3_letters,
+                                consecutivo=consecutivo,
+                                description=description
+                            )
+                            
+                            formatted_refs.append({
+                                'original': ref,
+                                'code': code_3_letters,
+                                'consecutivo': consecutivo,
+                                'category': category,
+                                'nombre_formateado': formatted_name
+                            })
+                            
+                        except Exception as e:
+                            logger.error(f"✗ Error procesando datos: {str(e)}")
+                            formatted_refs.append({
+                                'original': ref,
+                                'error': f"Error al procesar la fila: {str(e)}"
+                            })
+                    else:
+                        logger.warning(f"✗ No se encontró el consecutivo {numeric_str}")
+                        formatted_refs.append({
+                            'original': ref,
+                            'error': f"No se encontró el consecutivo {numeric_str}"
+                        })
+                        
+                except Exception as e:
+                    logger.error(f"✗ Error general: {str(e)}")
+                    formatted_refs.append({
+                        'original': ref,
+                        'error': str(e)
+                    })
+            
+            logger.info("=== FIN BÚSQUEDA EN GOOGLE SHEETS ===")
+            return formatted_refs
+            
+        except Exception as e:
+            error_msg = f"Error al buscar datos en Google Sheets: {str(e)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
-    def create_folders_and_copy_files(self, 
-                                    formatted_refs: List[dict], 
-                                    db_results: Dict[str, List[str]]) -> Dict:
+    def create_folders_and_copy_files(self, formatted_refs: List[dict], db_results: Dict[str, List[str]]) -> Dict:
         """
         Crea las carpetas y copia los archivos usando la información combinada.
+        Procesa una referencia a la vez, esperando selección de usuario si es necesario.
         
         Args:
             formatted_refs: Lista de referencias formateadas
             db_results: Diccionario con rutas de la base de datos
         
         Returns:
+            Dict con resultados del proceso y estado de procesamiento
+        """
+        logger.info("=== INICIO PROCESO DE CREACIÓN DE CARPETAS ===")
+        
+        # Obtener el estado actual del procesamiento
+        current_state = getattr(self, '_processing_state', {})
+        if not current_state:
+            # Inicializar estado si es la primera vez
+            current_state = {
+                "processed": [],
+                "errors": [],
+                "pending_files": {},
+                "current_index": 0,
+                "refs_to_process": formatted_refs
+            }
+            self._processing_state = current_state
+        
+        # Si no hay más referencias para procesar, retornar resultados finales
+        if current_state["current_index"] >= len(current_state["refs_to_process"]):
+            logger.info("=== FIN PROCESO DE CREACIÓN DE CARPETAS ===")
+            # Limpiar estado
+            self._processing_state = {}
+            return {
+                "processed": current_state["processed"],
+                "errors": current_state["errors"],
+                "pending_files": current_state["pending_files"],
+                "processing_complete": True
+            }
+        
+        # Obtener la siguiente referencia a procesar
+        ref_info = current_state["refs_to_process"][current_state["current_index"]]
+        original_ref = ref_info.get('original')
+        logger.info(f"\nProcesando referencia {current_state['current_index'] + 1} de {len(current_state['refs_to_process'])}: {original_ref}")
+        
+        try:
+            # Verificar si hay error previo
+            if 'error' in ref_info:
+                logger.warning(f"✗ Referencia con error previo: {ref_info['error']}")
+                current_state["errors"].append(f"Error previo en {original_ref}: {ref_info['error']}")
+                current_state["current_index"] += 1
+                return self.create_folders_and_copy_files(formatted_refs, db_results)
+            
+            final_name = ref_info['nombre_formateado']
+            category = ref_info.get('category', '')
+            
+            # Verificar rutas en base de datos
+            if original_ref not in db_results or not db_results[original_ref]:
+                logger.warning(f"✗ No hay rutas en base de datos para {original_ref}")
+                current_state["errors"].append(f"No hay rutas para {original_ref}")
+                current_state["current_index"] += 1
+                return self.create_folders_and_copy_files(formatted_refs, db_results)
+            
+            # Procesar la primera ruta encontrada
+            source_folder = db_results[original_ref][0]
+            logger.info(f"Procesando ruta: {source_folder}")
+            
+            # Buscar archivos sin copiarlos
+            files_info = self._copy_files(source_folder, None)
+            
+            # Si necesitamos esperar selección de archivo Rhino
+            if files_info.get("waiting_for_rhino"):
+                logger.info("Esperando selección de archivo Rhino")
+                current_state["pending_files"][original_ref] = {
+                    "source_folder": source_folder,
+                    "final_name": final_name,
+                    "category": category,
+                    "files_info": files_info
+                }
+                return {
+                    "processed": current_state["processed"],
+                    "errors": current_state["errors"],
+                    "pending_files": current_state["pending_files"],
+                    "waiting_for_rhino": True,
+                    "current_ref": original_ref,
+                    "processing_complete": False
+                }
+            
+            # Si no hay espera, proceder con la creación de carpetas
+            target_folder = self._create_folder_structure(
+                reference_name=final_name,
+                category=category,
+                source_path=source_folder
+            )
+            logger.info(f"✓ Estructura de carpetas creada: {target_folder}")
+            
+            # Copiar los archivos
+            copy_results = self.copy_selected_files(files_info, target_folder)
+            logger.info("✓ Archivos copiados exitosamente")
+            
+            # Registrar resultado exitoso
+            current_state["processed"].append({
+                "original": original_ref,
+                "final_name": final_name,
+                "target_folder": str(target_folder),
+                "source_folder": source_folder,
+                "copied_files": copy_results
+            })
+            
+            # Avanzar al siguiente índice
+            current_state["current_index"] += 1
+            
+            # Procesar la siguiente referencia
+            return self.create_folders_and_copy_files(formatted_refs, db_results)
+            
+        except Exception as e:
+            error_msg = f"Error procesando {original_ref}: {str(e)}"
+            logger.error(f"✗ {error_msg}")
+            current_state["errors"].append(error_msg)
+            current_state["current_index"] += 1
+            return self.create_folders_and_copy_files(formatted_refs, db_results)
+
+    def complete_folder_creation(self, ref_key: str, selected_rhino: Optional[str] = None) -> Dict:
+        """
+        Completa el proceso de creación de carpetas después de la selección de archivo Rhino
+        y continúa con el procesamiento de las siguientes referencias.
+        
+        Args:
+            ref_key: Clave de la referencia pendiente
+            selected_rhino: Ruta del archivo Rhino seleccionado (None si se omitió)
+            
+        Returns:
             Dict con resultados del proceso
         """
-        results = {
-            "processed": [],
-            "errors": []
-        }
+        logger.info("=== COMPLETANDO CREACIÓN DE CARPETAS ===")
         
-        for ref_data in formatted_refs:
-            try:
-                if 'error' in ref_data:
-                    results["errors"].append(f"Error previo con {ref_data['original']}: {ref_data['error']}")
-                    continue
-                    
-                original_ref = ref_data['original']
-                final_name = ref_data['nombre_formateado']
+        try:
+            # Obtener información pendiente
+            current_state = getattr(self, '_processing_state', {})
+            if not current_state:
+                raise ValueError("No hay estado de procesamiento activo")
                 
-                # Obtener ruta de la base de datos
-                source_paths = db_results.get(original_ref, [])
-                if not source_paths:
-                    results["errors"].append(f"No hay rutas en BD para {original_ref}")
-                    continue
+            pending_info = current_state.get("pending_files", {}).get(ref_key)
+            if not pending_info:
+                raise ValueError(f"No hay información pendiente para la referencia {ref_key}")
+            
+            # Actualizar información de archivos con la selección
+            files_info = pending_info["files_info"]
+            if selected_rhino:
+                files_info["rhino"] = {
+                    "source": selected_rhino,
+                    "filename": os.path.basename(selected_rhino).upper()
+                }
+            
+            # Crear estructura de carpetas
+            target_folder = self._create_folder_structure(
+                reference_name=pending_info["final_name"],
+                category=pending_info["category"],
+                source_path=pending_info["source_folder"]
+            )
+            logger.info(f"✓ Estructura de carpetas creada: {target_folder}")
+            
+            # Copiar los archivos
+            copy_results = self.copy_selected_files(files_info, target_folder)
+            logger.info("✓ Archivos copiados exitosamente")
+            
+            # Registrar resultado exitoso
+            current_state["processed"].append({
+                "original": ref_key,
+                "final_name": pending_info["final_name"],
+                "target_folder": str(target_folder),
+                "source_folder": pending_info["source_folder"],
+                "copied_files": copy_results
+            })
+            
+            # Eliminar la referencia de pendientes
+            if ref_key in current_state["pending_files"]:
+                del current_state["pending_files"][ref_key]
+            
+            # Avanzar al siguiente índice
+            current_state["current_index"] += 1
+            
+            # Continuar con el procesamiento de las siguientes referencias
+            formatted_refs = current_state["refs_to_process"]
+            db_results = {}  # Necesitamos obtener esto del contexto o pasarlo como parámetro
+            if hasattr(self.controller, "chat_manager"):
+                db_results = self.controller.chat_manager.step_context.get("db_results", {})
+            
+            return self.create_folders_and_copy_files(formatted_refs, db_results)
+            
+        except Exception as e:
+            error_msg = f"Error completando creación de carpetas: {str(e)}"
+            logger.error(f"✗ {error_msg}")
+            
+            if current_state:
+                current_state["errors"].append(error_msg)
+                current_state["current_index"] += 1
                 
-                # Usar la primera ruta (ya ordenada por preferencia de 'instructivo')
-                source_folder = source_paths[0]
+                # Continuar con la siguiente referencia a pesar del error
+                formatted_refs = current_state["refs_to_process"]
+                db_results = {}
+                if hasattr(self.controller, "chat_manager"):
+                    db_results = self.controller.chat_manager.step_context.get("db_results", {})
                 
-                # Determinar la categoría basada en la ruta origen
-                category = self._determine_category_from_path(source_folder)
-                logger.info(f"Categoría determinada para {original_ref}: {category}")
-                
-                # Crear estructura de carpetas
-                target_folder = self._create_folder_structure(
-                    reference_name=final_name,
-                    category=category,
-                    source_path=source_folder
-                )
-                
-                # Copiar archivos
-                copy_results = self._copy_files(
-                    source_folder=source_folder,
-                    target_folder=target_folder
-                )
-                
-                results["processed"].append({
-                    "original": original_ref,
-                    "final_name": final_name,
-                    "target_folder": str(target_folder),
-                    "copied_files": copy_results
-                })
-                
-            except Exception as e:
-                results["errors"].append(f"Error procesando {original_ref}: {str(e)}")
-                
-        return results
+                return self.create_folders_and_copy_files(formatted_refs, db_results)
+            else:
+                return {
+                    "errors": [error_msg],
+                    "processing_complete": True
+                }
+        finally:
+            logger.info("=== FIN COMPLETANDO CREACIÓN DE CARPETAS ===")
 
     def _sanitize_folder_name(self, name: str) -> str:
         """
@@ -268,7 +478,7 @@ class ReferenceFolderCreationManager:
                                category: str, 
                                source_path: str) -> Path:
         """
-        Crea la estructura de carpetas necesaria.
+        Crea la estructura de carpetas necesaria usando el LLM para optimizar la estructura.
         
         Args:
             reference_name: Nombre formateado de la referencia
@@ -295,17 +505,78 @@ class ReferenceFolderCreationManager:
                 category = "OFICINA"
                 logger.info("Categoría forzada a OFICINA por contener 'escritorio'")
             else:
-                # Convertir plural a singular
+                # Convertir plural a singular si es necesario
                 if category.endswith('S'):
                     category = category[:-1]
                     logger.debug(f"Categoría convertida a singular: {category}")
             
-            # 3. Crear carpeta base y categoría
+            # 3. Usar el LLM para determinar la estructura de carpetas óptima
+            try:
+                # Forzar que el LLM use la categoría en singular
+                suggested_structure, _ = self.llm.determine_folder_structure(
+                    source_path=source_path,
+                    reference_name=reference_name,
+                    category=category  # Ya está en singular aquí
+                )
+                
+                # Limpiar y validar la estructura sugerida
+                suggested_structure = suggested_structure.strip()
+                if not suggested_structure:
+                    raise ValueError("El LLM no proporcionó una estructura válida")
+                
+                # Asegurar que la primera carpeta use la categoría en singular
+                folder_parts = suggested_structure.split('/')
+                if folder_parts and folder_parts[0].strip().upper().endswith('S'):
+                    folder_parts[0] = folder_parts[0][:-1]
+                suggested_structure = '/'.join(folder_parts)
+                
+                logger.info(f"Estructura sugerida por LLM: {suggested_structure}")
+                
+                # 4. Crear la estructura de carpetas
+                current_folder = base_folder
+                
+                for part in folder_parts:
+                    part = part.strip()
+                    if part:  # Ignorar partes vacías
+                        safe_part = self._sanitize_folder_name(part)
+                        current_folder = current_folder / safe_part
+                        current_folder.mkdir(parents=True, exist_ok=True)
+                        logger.debug(f"Creada carpeta: {safe_part}")
+                
+                logger.info(f"Estructura de carpetas creada exitosamente: {current_folder}")
+                return current_folder
+                
+            except Exception as e:
+                logger.error(f"Error con el LLM, usando método fallback: {str(e)}")
+                # Si falla el LLM, usar el método anterior como fallback
+                return self._create_folder_structure_fallback(
+                    reference_name=reference_name,
+                    category=category,  # Ya está en singular
+                    source_path=source_path,
+                    base_folder=base_folder
+                )
+            
+        except Exception as e:
+            error_msg = f"Error creando estructura de carpetas: {str(e)}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+    def _create_folder_structure_fallback(self,
+                                       reference_name: str,
+                                       category: str,
+                                       source_path: str,
+                                       base_folder: Path) -> Path:
+        """
+        Método fallback para crear la estructura de carpetas cuando falla el LLM.
+        Usa la lógica original del método.
+        """
+        try:
+            # 1. Crear carpeta de categoría
             cat_folder = base_folder / category
             cat_folder.mkdir(parents=True, exist_ok=True)
             logger.info(f"Carpeta de categoría creada: {cat_folder}")
             
-            # 4. Analizar ruta origen para replicar estructura intermedia
+            # 2. Analizar ruta origen para replicar estructura intermedia
             source_parts = Path(source_path).parts
             
             # Encontrar el índice después de la categoría en la ruta origen
@@ -316,11 +587,15 @@ class ReferenceFolderCreationManager:
                     break
             
             if category_index >= 0 and category_index + 1 < len(source_parts):
-                # Tomar partes intermedias hasta encontrar 'NUBE' o llegar al final
+                # Tomar partes intermedias hasta encontrar 'NUBE', 'EDITABLE' o carpetas similares
                 current_folder = cat_folder
+                skip_folders = {'nube', 'editable', '16mm', '3dm', 'renders', 'pdf', 'dwg', 'jpg'}
+                
                 for part in source_parts[category_index + 1:]:
-                    if part.upper() == 'NUBE':
-                        break
+                    part_lower = part.lower()
+                    # Saltar si es una carpeta que no queremos incluir
+                    if part_lower in skip_folders or any(folder in part_lower for folder in skip_folders):
+                        continue
                     # Sanitizar y crear subcarpeta intermedia
                     safe_part = self._sanitize_folder_name(part)
                     current_folder = current_folder / safe_part
@@ -330,7 +605,7 @@ class ReferenceFolderCreationManager:
                 current_folder = cat_folder
                 logger.warning("No se encontró punto de referencia para estructura intermedia")
             
-            # 5. Crear carpeta final con el nombre sanitizado de la referencia
+            # 3. Crear carpeta final con el nombre sanitizado de la referencia
             safe_reference_name = self._sanitize_folder_name(reference_name)
             final_folder = current_folder / safe_reference_name
             final_folder.mkdir(exist_ok=True)
@@ -339,7 +614,7 @@ class ReferenceFolderCreationManager:
             return final_folder
             
         except Exception as e:
-            error_msg = f"Error creando estructura de carpetas: {str(e)}"
+            error_msg = f"Error en método fallback: {str(e)}"
             logger.error(error_msg)
             raise ValueError(error_msg)
 
@@ -360,92 +635,6 @@ class ReferenceFolderCreationManager:
             logger.error(f"Error en autenticación con Google Sheets: {e}")
             raise
 
-    def _fetch_reference_data(self, reference: str) -> Tuple[str, str, str, str]:
-        """
-        Obtiene datos de la referencia desde Google Sheets.
-        
-        Args:
-            reference: Referencia a buscar (ej: 'MBT 11306')
-
-        Returns:
-            Tupla (code_3_letters, consecutivo, description, category)
-            
-        Raises:
-            ValueError: Si no se encuentra la referencia o hay error en el formato
-        """
-        logger.debug(f"Buscando datos para referencia: {reference}")
-        
-        # Extraer parte numérica (consecutivo)
-        numeric_match = re.search(r"\d{3,5}", reference)
-        if not numeric_match:
-            error_msg = f"No se encontró parte numérica en la referencia: {reference}"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-            
-        numeric_str = numeric_match.group(0)
-        logger.debug(f"Parte numérica extraída: {numeric_str}")
-        
-        try:
-            # Abrir la hoja de cálculo
-            sheet = self.gc.open_by_key(self.google_sheet_key)
-            worksheet = sheet.worksheet('REFERENCIAS 1-2-3-4')  # Nombre específico de la hoja
-            logger.info(f"Hoja de cálculo abierta: {sheet.title}")
-            logger.info(f"Hoja de trabajo seleccionada: {worksheet.title}")
-            
-            # Obtener todos los valores de una vez
-            all_values = worksheet.get_all_values()
-            logger.info(f"Total de filas obtenidas: {len(all_values)}")
-            
-            # Buscar la coincidencia
-            found_row = None
-            found_index = -1
-            
-            for i, row in enumerate(all_values, 1):  # Empezar desde 1 para mantener índices consistentes
-                if len(row) >= 5:  # Asegurar que hay suficientes columnas
-                    current_value = row[4].strip()  # Columna E (índice 4)
-                    logger.debug(f"Fila {i:4d} | Comparando: '{current_value}' con '{numeric_str}'")
-                    if current_value == numeric_str:
-                        found_row = row
-                        found_index = i
-                        break
-            
-            if found_row:
-                logger.info(f"¡Coincidencia encontrada en fila {found_index}!")
-                logger.info("Contenido de la fila encontrada:")
-                for col_idx, value in enumerate(found_row):
-                    logger.info(f"  Índice {col_idx:2d} | Columna {chr(65+col_idx)} | Valor: {value}")
-                
-                try:
-                    # Extraer valores relevantes
-                    code_3_letters = found_row[3].strip()  # Columna D (índice 3)
-                    consecutivo = found_row[4].strip()     # Columna E (índice 4)
-                    description = found_row[5].strip()     # Columna F (índice 5)
-                    category = found_row[7].strip()        # Columna H (índice 7)
-                    
-                    logger.info(f"\nDatos extraídos para {reference}:")
-                    logger.info(f"  - Código (col D, índice 3): {code_3_letters}")
-                    logger.info(f"  - Consecutivo (col E, índice 4): {consecutivo}")
-                    logger.info(f"  - Descripción (col F, índice 5): {description}")
-                    logger.info(f"  - Categoría (col H, índice 7): {category}")
-                    
-                    return code_3_letters, consecutivo, description, category
-                except IndexError as e:
-                    error_msg = f"Error al procesar la fila encontrada: {str(e)}. La fila no tiene el formato esperado."
-                    logger.error(error_msg)
-                    raise ValueError(error_msg)
-            
-            # Si llegamos aquí, no se encontró la referencia
-            error_msg = f"No se encontró el consecutivo {numeric_str} en la hoja"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-            
-        except Exception as e:
-            if "Error al procesar la fila encontrada" in str(e):
-                raise  # Re-lanzar el error específico de procesamiento
-            error_msg = f"Error al buscar datos en Google Sheets: {str(e)}"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
     def _format_reference_name(self, 
                              code_3_letters: str,
                              consecutivo: str,
@@ -459,25 +648,22 @@ class ReferenceFolderCreationManager:
             description: Descripción original del mueble
 
         Returns:
-            Nombre formateado (ej: 'CDB 9493 - CLOSET BARILOCHE ECO 150 (DUNA-BLANCO + BLANCO MQZ)')
+            str: Nombre formateado (ej: 'CDB 9493 - CLOSET BARILOCHE ECO 150 (DUNA-BLANCO + BLANCO MQZ)')
         """
-        logger.debug(f"Formateando descripción con LLM: {description}")
-        
+        logger.info("Formateando nombre con LLM")
         try:
-            # Usar el LLM para formatear el nombre
             formatted_name = self.llm.format_reference_name(
                 code=code_3_letters,
                 number=consecutivo,
                 description=description
             )
             
-            logger.info(f"Nombre formateado por LLM: {formatted_name}")
+            logger.info(f"✓ Nombre formateado: {formatted_name}")
             return formatted_name
             
         except Exception as e:
-            logger.error(f"Error al formatear con LLM: {str(e)}")
-            # Si falla el LLM, usar el método anterior como fallback
-            logger.warning("Usando método de formateo fallback")
+            logger.error(f"✗ Error en formateo LLM: {str(e)}")
+            logger.info("Usando método de formateo alternativo")
             return self._format_reference_name_fallback(
                 code_3_letters, 
                 consecutivo, 
@@ -560,7 +746,8 @@ class ReferenceFolderCreationManager:
                 ORDER BY 
                     CASE 
                         WHEN LOWER(path) LIKE '%instructivo%' THEN 1
-                        ELSE 2
+                        WHEN LOWER(path) LIKE '%\\nube\\%' THEN 2
+                        ELSE 3
                     END,
                     path
             """
@@ -682,164 +869,254 @@ class ReferenceFolderCreationManager:
 
     def _find_base_folder(self, source_folder: str) -> str:
         """
-        Encuentra la carpeta base del proyecto.
-        Retrocede en la estructura hasta encontrar una carpeta que:
-        1. No sea una carpeta de sistema (NUBE, EDITABLES, etc.)
-        2. No sea una ruta base de la NAS
-        3. Contenga subcarpetas con archivos del proyecto
+        Sube en la jerarquía de directorios hasta que el padre sea uno de los 'root_paths' oficiales.
+        Devuelve la carpeta base desde donde iniciar la búsqueda.
         
         Args:
-            source_folder: Carpeta origen desde donde iniciar la búsqueda
+            source_folder: Ruta de la carpeta origen
             
         Returns:
-            str: Ruta de la carpeta base identificada
+            str: Ruta de la carpeta base del proyecto
+            
+        Ejemplo:
+            Si source_folder es '//192.168.200.250/cocina/Mueble Alacena Fenix/MODULO MICROONDAS FENIX 60/NUBE'
+            y '//192.168.200.250/cocina' está en root_paths,
+            retornará '//192.168.200.250/cocina/Mueble Alacena Fenix'
         """
-        current_path = source_folder
-        system_folders = {'nube', 'editables', 'editable', 'hojas de diseño', 'planos'}
-        
-        while current_path != os.path.dirname(current_path):  # Mientras no lleguemos a la raíz
-            folder_name = os.path.basename(current_path).lower()
-            parent_path = os.path.dirname(current_path)
+        logger.info(f"=== INICIO BÚSQUEDA DE CARPETA BASE ===")
+        logger.info(f"Carpeta origen: {source_folder}")
+
+        # Normaliza barras para evitar problemas
+        current_path = os.path.normpath(source_folder)
+        logger.info(f"Ruta normalizada: {current_path}")
+
+        while True:
+            parent_path = os.path.normpath(os.path.dirname(current_path)) # Obtiene el padre de la ruta actual
+            logger.info(f"Analizando padre: {parent_path}")
             
-            # Si es una ruta base de la NAS, detenerse en el nivel anterior
-            if self._is_root_path(current_path):
-                return parent_path
-                
-            # Si es una carpeta de sistema, subir un nivel
-            if folder_name in system_folders:
-                current_path = parent_path
-                continue
-                
-            try:
-                # Verificar si esta carpeta tiene una estructura de proyecto válida
-                has_system_folder = False
-                for item in os.listdir(current_path):
-                    item_lower = item.lower()
-                    if item_lower in system_folders:
-                        has_system_folder = True
-                        break
-                
-                # Si encontramos una carpeta que contiene subcarpetas de sistema,
-                # esta es nuestra carpeta base
-                if has_system_folder:
-                    return current_path
-                    
-            except Exception as e:
-                logger.error(f"Error explorando {current_path}: {str(e)}")
-            
+            # Si llegamos a la raíz o no podemos subir más
+            if not parent_path or parent_path == current_path:
+                logger.warning(f"✗ Llegamos al tope sin encontrar una ruta raíz")
+                return current_path
+
+            # Si el padre es una ruta raíz, retornamos la carpeta actual
+            if self._is_one_of_my_roots(parent_path):
+                logger.info(f"✓ Carpeta base encontrada: {current_path}")
+                logger.info(f"=== FIN BÚSQUEDA DE CARPETA BASE ===")
+                return current_path
+
+            # Guardamos la ruta actual antes de subir
+            previous_path = current_path
             current_path = parent_path
             
-        return source_folder  # Si no encontramos nada, devolver la carpeta original
+            # Si no pudimos subir más, usamos la última ruta válida
+            if current_path == previous_path:
+                logger.warning(f"✗ No se pudo subir más en la jerarquía")
+                return current_path
+                
+        logger.info(f"=== FIN BÚSQUEDA DE CARPETA BASE ===")
 
-    def _find_rhino_file(self, source_folder: str) -> Optional[str]:
+    def _is_one_of_my_roots(self, path: str) -> bool:
         """
-        Busca el archivo Rhino siguiendo la lógica especificada.
+        Retorna True si 'path' coincide con alguno de los root_paths "oficiales".
         
         Args:
-            source_folder: Carpeta origen donde iniciar la búsqueda
+            path: Ruta a verificar
             
         Returns:
-            Optional[str]: Ruta del archivo Rhino encontrado o None si no se encuentra
+            bool: True si la ruta coincide exactamente con alguna ruta raíz
         """
-        logger.info(f"Buscando archivo Rhino para: {source_folder}")
+        # Ajusta las barras y minúsculas para comparación consistente
+        norm_path = os.path.normpath(path).lower().rstrip('\\')
+        logger.info(f"Verificando si '{path}' es una ruta raíz")
+        logger.info(f"Ruta normalizada: '{norm_path}'")
+        
+        for root in self.root_paths:
+            norm_root = os.path.normpath(root).lower().rstrip('\\')
+            logger.info(f"Comparando con raíz: '{norm_root}'")
+            
+            # Verificamos coincidencia exacta
+            if norm_path == norm_root:
+                logger.info(f"✓ Coincidencia encontrada: {path} es una ruta raíz")
+                return True
+                
+        logger.info(f"✗ {path} no es una ruta raíz")
+        return False
+
+    def _list_alternative_rhino_files(self, folder: str) -> str:
+        """
+        Lista archivos .3dm en la carpeta padre de `folder`.
+        Retorna un string con formato <file_button>...</file_button> que 
+        el chatPanel luego convierte en botones.
+        
+        Args:
+            folder: Ruta de la carpeta donde se buscarán los archivos
+            
+        Returns:
+            str: Mensaje formateado con botones para cada archivo encontrado
+        """
+        # 1) Obtener la carpeta padre y validar
+        parent_path = os.path.dirname(folder)
+        if not os.path.isdir(parent_path):
+            logger.warning(f"La carpeta padre no existe: {parent_path}")
+            return ""
+
+        # 2) Buscar archivos .3dm en la carpeta padre
+        rhino_candidates = []
+        try:
+            for item in os.listdir(parent_path):
+                if item.lower().endswith(".3dm"):
+                    full_path = os.path.join(parent_path, item)
+                    if os.path.isfile(full_path):
+                        rhino_candidates.append(full_path)
+                        logger.debug(f"Archivo Rhino encontrado: {full_path}")
+        except Exception as e:
+            logger.error(f"Error buscando archivos .3dm: {str(e)}")
+            return ""
+
+        # 3) Si no hay candidatos, retornar vacío
+        if not rhino_candidates:
+            logger.warning("No se encontraron archivos .3dm alternativos")
+            return ""
+
+        # 4) Construir el mensaje con los botones
+        message = (
+            "No se ha encontrado el archivo de Rhino en la carpeta EDITABLES.\n"
+            "Pero se han encontrado estos otros archivos .3dm en la carpeta padre.\n"
+            "Revisa y selecciona el que corresponda, o ignora la copia.\n\n"
+        )
+
+        # 5) Agregar botones para cada archivo encontrado
+        for file_path in rhino_candidates:
+            file_name = os.path.basename(file_path)
+            message += "---\n\n"
+            message += f"**{file_name}**\n"
+
+            # Botón para abrir carpeta
+            open_folder_btn = {
+                "text": "Abrir carpeta",
+                "path": os.path.dirname(file_path),
+                "type": "folder"
+            }
+            message += f"<file_button>{open_folder_btn}</file_button>\n"
+
+            # Botón para abrir archivo
+            open_file_btn = {
+                "text": "Abrir archivo",
+                "path": file_path,
+                "type": "rhino"
+            }
+            message += f"<file_button>{open_file_btn}</file_button>\n"
+
+            # Botón para elegir archivo
+            choose_file_btn = {
+                "text": "Elegir este archivo",
+                "path": file_path,
+                "type": "choose_rhino"
+            }
+            message += f"<file_button>{choose_file_btn}</file_button>\n\n"
+
+        logger.info(f"Mensaje generado con {len(rhino_candidates)} archivos alternativos")
+        return message
+
+    def _find_rhino_file(self, source_folder: str) -> Optional[List[str]]:
+        logger.info("=== INICIO BÚSQUEDA DE ARCHIVO RHINO ===")
+        logger.info(f"Carpeta origen: {source_folder}")
         
         try:
-            # 1. Encontrar la carpeta base del proyecto
+            # 1) Primero, buscar en la carpeta EDITABLES del nivel actual
+            # Subir un nivel desde la carpeta actual (ej: desde NUBE subir a MODULO MICROONDAS FENIX 60)
+            current_dir = os.path.dirname(os.path.dirname(source_folder))
+            logger.info(f"Buscando en el nivel actual: {current_dir}")
+            
+            # Buscar carpeta EDITABLES en este nivel
+            editables_path = os.path.join(current_dir, "EDITABLES")
+            if os.path.exists(editables_path) and os.path.isdir(editables_path):
+                logger.info(f"Carpeta EDITABLES encontrada: {editables_path}")
+                
+                # Buscar archivos .3dm en EDITABLES
+                rhino_files = []
+                for root, _, files in os.walk(editables_path):
+                    rhino_files.extend([
+                        os.path.join(root, f) 
+                        for f in files 
+                        if f.lower().endswith('.3dm')
+                    ])
+                
+                if rhino_files:
+                    if len(rhino_files) == 1:
+                        logger.info(f"✓ Archivo único encontrado en EDITABLES actual: {rhino_files[0]}")
+                        return [rhino_files[0]]
+                    else:
+                        logger.info(f"Múltiples archivos encontrados en EDITABLES actual: {len(rhino_files)}")
+                        return rhino_files
+                
+                logger.info("No se encontraron archivos .3dm en EDITABLES actual")
+            else:
+                logger.info(f"No se encontró carpeta EDITABLES en: {current_dir}")
+            
+            # 2) Si no se encontró en EDITABLES actual, buscar en la carpeta base del proyecto
+            logger.info("No se encontró en EDITABLES actual, buscando en carpeta base...")
+            
             base_path = self._find_base_folder(source_folder)
-            logger.info(f"Carpeta base identificada: {base_path}")
-            
-            # 2. Obtener todas las rutas posibles desde la carpeta base
-            all_paths = self._get_all_possible_paths(base_path)
-            
-            # Registrar todas las rutas encontradas
-            logger.info("Rutas encontradas:")
-            for path_info in all_paths:
-                logger.info(f"- {path_info['path']}")
-                logger.info(f"  Profundidad: {path_info['depth']}")
-                logger.info(f"  Es EDITABLE: {path_info['is_editable']}")
-                logger.info(f"  Es NUBE: {path_info['is_nube']}")
-                logger.info(f"  Ruta relativa: {path_info['relative_to_start']}")
-            
-            # 3. Usar el LLM para determinar la mejor ruta
-            search_path_response, _ = self.llm.determine_rhino_search_strategy(
-                source_folder=source_folder,
-                reference=os.path.basename(source_folder),
-                available_paths=all_paths
-            )
-            
-            search_path = search_path_response.strip()
-            logger.info(f"LLM sugiere buscar en: {search_path}")
-            
-            if not os.path.exists(search_path):
-                logger.warning(f"La ruta sugerida no existe: {search_path}")
+            if not base_path or not os.path.exists(base_path):
+                logger.error(f"✗ No se pudo determinar la carpeta base desde: {source_folder}")
                 return None
                 
-            # 4. Buscar archivos Rhino en la ruta sugerida
-            rhino_files = []
-            for root, _, files in os.walk(search_path):
-                for file in files:
-                    if file.lower().endswith('.3dm'):
-                        rhino_files.append(os.path.join(root, file))
-                        logger.info(f"Archivo Rhino encontrado: {os.path.join(root, file)}")
+            logger.info(f"✓ Carpeta base identificada: {base_path}")
             
-            if rhino_files:
-                # 5. Usar el LLM para seleccionar el mejor archivo
-                response, _ = self.llm.suggest_rhino_file(
-                    files=rhino_files,
-                    reference=os.path.basename(source_folder),
-                    source_folder=source_folder
-                )
-                
-                # Verificar que la respuesta sea una ruta válida
-                if response and os.path.exists(response.strip()):
-                    chosen_file = response.strip()
-                    logger.info(f"LLM sugirió el archivo: {chosen_file}")
-                    return chosen_file
-                else:
-                    # Si el LLM no pudo decidir, usar la lógica de prioridad por versión
-                    rhino_files.sort(key=lambda x: (
-                        0 if 'rhino5' in x.lower() or 'r5' in x.lower() else
-                        1 if 'rhino4' in x.lower() or 'r4' in x.lower() else
-                        2 if 'rhino6' in x.lower() or 'r6' in x.lower() else
-                        3 if 'rhino7' in x.lower() or 'r7' in x.lower() else 4,
-                        # Segundo criterio: priorizar archivos en carpetas EDITABLE
-                        0 if any(ed in os.path.dirname(x).lower() for ed in ['editable', 'editables']) else 1,
-                        # Tercer criterio: profundidad de la ruta (menos es mejor)
-                        len(os.path.normpath(x).split(os.sep))
-                    ))
-                    chosen_file = rhino_files[0]
-                    logger.info(f"Seleccionado archivo por prioridad de versión: {chosen_file}")
-                    return chosen_file
+            # Verificar que no estemos en una ruta raíz
+            if self._is_one_of_my_roots(base_path):
+                logger.error("✗ La carpeta base no puede ser una ruta raíz")
+                return None
             
-            logger.warning(f"No se encontraron archivos Rhino en {search_path}")
+            # Obtener todas las rutas posibles desde la carpeta base
+            all_paths = self._get_all_possible_paths(base_path)
+            logger.info(f"✓ Rutas encontradas en carpeta base: {len(all_paths)}")
+            
+            # Buscar en otras carpetas EDITABLES del proyecto
+            editable_paths = [p['path'] for p in all_paths if p['is_editable']]
+            all_rhino_files = []
+            
+            if editable_paths:
+                logger.info("Buscando en otras carpetas EDITABLES del proyecto")
+                for editable_path in editable_paths:
+                    for root, _, files in os.walk(editable_path):
+                        rhino_files = [os.path.join(root, f) for f in files if f.lower().endswith('.3dm')]
+                        all_rhino_files.extend(rhino_files)
+                        if rhino_files:
+                            logger.info(f"Encontrados {len(rhino_files)} archivos en {editable_path}")
+
+            # Si encontramos archivos, retornarlos todos para que el usuario elija
+            if all_rhino_files:
+                logger.info(f"✓ Total de archivos Rhino encontrados: {len(all_rhino_files)}")
+                return all_rhino_files
+            
+            # Si no se encontró ningún archivo, retornar None
+            logger.info("✗ No se encontró ningún archivo Rhino")
             return None
             
         except Exception as e:
-            logger.error(f"Error buscando archivo Rhino: {str(e)}")
+            logger.error(f"✗ Error en búsqueda: {str(e)}")
             return None
+        finally:
+            logger.info("=== FIN BÚSQUEDA DE ARCHIVO RHINO ===")
 
     def _copy_files(self, source_folder: str, target_folder: Path) -> Dict:
-        """
-        Copia archivos relevantes (PDF, Rhino) a la carpeta destino.
-        
-        Args:
-            source_folder: Carpeta origen en la NAS
-            target_folder: Carpeta destino local
-
-        Returns:
-            Dict con información de los archivos copiados
-        """
-        logger.debug(f"Buscando archivos para copiar desde: {source_folder}")
-        logger.debug(f"Carpeta destino: {target_folder}")
+        logger.info("=== INICIO BÚSQUEDA DE ARCHIVOS ===")
+        logger.info(f"Origen: {source_folder}")
+        logger.info(f"Destino: {target_folder}")
         
         result = {
             "pdf": None,
             "rhino": None,
-            "errors": []
+            "errors": [],
+            "waiting_for_rhino": False,
+            "rhino_alternatives": []
         }
         
         try:
-            # 1. Buscar y copiar PDF
+            # 1) Buscar PDF
             pdf_candidates = []
             for root, _, files in os.walk(source_folder):
                 for file in files:
@@ -847,54 +1124,144 @@ class ReferenceFolderCreationManager:
                         pdf_candidates.append(os.path.join(root, file))
             
             if pdf_candidates:
-                # Priorizar PDFs que contengan "instructivo"
-                instructivo_pdfs = [p for p in pdf_candidates 
-                                  if "instructivo" in p.lower()]
-                
+                # Priorizar PDFs con "instructivo" en el nombre
+                instructivo_pdfs = [p for p in pdf_candidates if 'instructivo' in p.lower()]
                 if instructivo_pdfs:
-                    pdf_to_copy = instructivo_pdfs[0]
-                    logger.info(f"Seleccionado PDF con 'instructivo': {pdf_to_copy}")
+                    selected_pdf = instructivo_pdfs[0]
+                    logger.info(f"✓ PDF de instructivo seleccionado: {selected_pdf}")
                 else:
-                    # Tomar el más reciente
-                    pdf_to_copy = max(pdf_candidates, key=os.path.getmtime)
-                    logger.info(f"Seleccionado PDF más reciente: {pdf_to_copy}")
+                    selected_pdf = pdf_candidates[0]
+                    logger.info(f"✓ PDF seleccionado: {selected_pdf}")
                 
-                # Copiar PDF con nombre en mayúsculas
-                pdf_name = os.path.basename(pdf_to_copy).upper()
-                pdf_target = target_folder / pdf_name
-                shutil.copy2(pdf_to_copy, pdf_target)
-                result["pdf"] = pdf_name
-                logger.info(f"PDF copiado: {result['pdf']}")
+                # Guardar información del PDF para copiarlo después
+                result["pdf"] = {
+                    "source": selected_pdf,
+                    "filename": os.path.basename(selected_pdf).upper()
+                }
+                logger.info("✓ PDF identificado exitosamente")
             else:
-                logger.warning("No se encontraron archivos PDF")
-                result["errors"].append("No se encontraron archivos PDF")
+                logger.warning("✗ No se encontraron archivos PDF")
             
-            # 2. Buscar y copiar archivo Rhino
-            try:
-                rhino_file = self._find_rhino_file(source_folder)
-                if rhino_file:
-                    # Copiar archivo Rhino con nombre en mayúsculas
-                    rhino_name = os.path.basename(rhino_file).upper()
-                    rhino_target = target_folder / rhino_name
-                    shutil.copy2(rhino_file, rhino_target)
-                    result["rhino"] = rhino_name
-                    logger.info(f"Archivo Rhino copiado: {result['rhino']}")
+            # 2) Buscar archivo Rhino
+            rhino_files = self._find_rhino_file(source_folder)
+            if rhino_files:
+                if len(rhino_files) == 1:
+                    # Si solo hay un archivo, guardarlo para copiarlo después
+                    rhino_file = rhino_files[0]
+                    result["rhino"] = {
+                        "source": rhino_file,
+                        "filename": os.path.basename(rhino_file).upper()
+                    }
+                    logger.info("✓ Archivo Rhino único identificado")
                 else:
-                    logger.warning("No se encontraron archivos Rhino")
-                    result["errors"].append("No se encontraron archivos Rhino")
+                    # Si hay múltiples archivos, esperar selección del usuario
+                    logger.info(f"Encontrados {len(rhino_files)} archivos Rhino alternativos")
+                    result["waiting_for_rhino"] = True
+                    result["rhino_alternatives"] = rhino_files
                     
-            except Exception as e:
-                error_msg = f"Error buscando archivo Rhino: {str(e)}"
-                logger.error(error_msg)
-                result["errors"].append(error_msg)
+                    # Construir mensaje con alternativas
+                    alternatives_message = (
+                        "Se han encontrado varios archivos Rhino. "
+                        "Por favor, selecciona el archivo correcto:\n\n"
+                    )
+                    
+                    for rhino_file in rhino_files:
+                        file_name = os.path.basename(rhino_file)
+                        alternatives_message += "---\n\n"
+                        alternatives_message += f"**{file_name}**\n"
+                        
+                        # Botón para abrir carpeta
+                        open_folder_btn = {
+                            "text": "Abrir carpeta",
+                            "path": os.path.dirname(rhino_file),
+                            "type": "folder"
+                        }
+                        alternatives_message += f"<file_button>{open_folder_btn}</file_button>\n"
+                        
+                        # Botón para abrir archivo
+                        open_file_btn = {
+                            "text": "Abrir archivo",
+                            "path": rhino_file,
+                            "type": "rhino"
+                        }
+                        alternatives_message += f"<file_button>{open_file_btn}</file_button>\n"
+                        
+                        # Botón para elegir archivo
+                        choose_file_btn = {
+                            "text": "Elegir este archivo",
+                            "path": rhino_file,
+                            "type": "choose_rhino"
+                        }
+                        alternatives_message += f"<file_button>{choose_file_btn}</file_button>\n\n"
+                    
+                    # Emitir mensaje al chat
+                    if self.controller and hasattr(self.controller, "chat_manager"):
+                        self.controller.chat_manager.llm_response.emit(
+                            "Sistema",
+                            alternatives_message,
+                            False
+                        )
+            else:
+                # No se encontró ningún archivo Rhino
+                logger.warning("✗ No se encontraron archivos Rhino")
+                result["errors"].append("No se encontraron archivos Rhino")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"Error buscando archivos: {str(e)}"
+            logger.error(f"✗ {error_msg}")
+            result["errors"].append(error_msg)
+            return result
+        finally:
+            logger.info("=== FIN BÚSQUEDA DE ARCHIVOS ===")
+
+    def copy_selected_files(self, source_files: Dict, target_folder: Path) -> Dict:
+        """
+        Copia los archivos seleccionados a la carpeta destino.
+        
+        Args:
+            source_files: Diccionario con información de los archivos a copiar
+            target_folder: Carpeta destino
+            
+        Returns:
+            Dict con resultados de la copia
+        """
+        logger.info("=== INICIO COPIA DE ARCHIVOS ===")
+        result = {
+            "pdf": None,
+            "rhino": None,
+            "errors": []
+        }
+        
+        try:
+            # Copiar PDF si existe
+            if source_files.get("pdf"):
+                pdf_source = source_files["pdf"]["source"]
+                pdf_filename = source_files["pdf"]["filename"]
+                pdf_target = target_folder / pdf_filename
+                shutil.copy2(pdf_source, pdf_target)
+                result["pdf"] = pdf_filename
+                logger.info(f"✓ PDF copiado: {pdf_filename}")
+            
+            # Copiar Rhino si existe
+            if source_files.get("rhino"):
+                rhino_source = source_files["rhino"]["source"]
+                rhino_filename = source_files["rhino"]["filename"]
+                rhino_target = target_folder / rhino_filename
+                shutil.copy2(rhino_source, rhino_target)
+                result["rhino"] = rhino_filename
+                logger.info(f"✓ Archivo Rhino copiado: {rhino_filename}")
             
             return result
             
         except Exception as e:
             error_msg = f"Error copiando archivos: {str(e)}"
-            logger.error(error_msg)
+            logger.error(f"✗ {error_msg}")
             result["errors"].append(error_msg)
             return result
+        finally:
+            logger.info("=== FIN COPIA DE ARCHIVOS ===")
 
     def _determine_category_from_path(self, path: str) -> str:
         """

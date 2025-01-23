@@ -11,9 +11,17 @@ import json
 from time import sleep
 import requests
 import tiktoken
+from datetime import datetime
 
 # Configurar logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('llm_prompts.log', encoding='utf-8', mode='a'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 class LLMError(Exception):
@@ -66,8 +74,68 @@ class LLMManager:
         self.model = "meta-llama/llama-3.3-70b-instruct"
         self.tokenizer = tiktoken.encoding_for_model("gpt-3.5-turbo")  # Usamos este tokenizer como aproximación
         self.session_cost = 0.0
+        
+        # Contadores de tokens
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        
+        # Historial de conversación
+        self.conversation_history = []
+        
         logger.info("LLMManager inicializado correctamente")
         
+    def count_tokens(self, text: str) -> int:
+        """
+        Cuenta la cantidad de tokens en un texto.
+        
+        Args:
+            text: Texto a contar tokens
+            
+        Returns:
+            int: Número de tokens
+        """
+        try:
+            return len(self.tokenizer.encode(text))
+        except Exception as e:
+            logger.error(f"Error al contar tokens: {str(e)}")
+            return 0
+
+    def count_messages_tokens(self, messages: List[Dict]) -> int:
+        """
+        Cuenta los tokens en una lista de mensajes.
+        
+        Args:
+            messages: Lista de mensajes en formato ChatCompletion
+            
+        Returns:
+            int: Total de tokens en los mensajes
+        """
+        total = 0
+        try:
+            for message in messages:
+                # Contar tokens del contenido
+                content_tokens = self.count_tokens(message.get("content", ""))
+                # Contar tokens del rol (aproximadamente 4 tokens por rol)
+                role_tokens = 4
+                total += content_tokens + role_tokens
+            
+            # Agregar tokens de formato (aproximadamente 3 tokens por mensaje)
+            total += len(messages) * 3
+            
+            return total
+        except Exception as e:
+            logger.error(f"Error al contar tokens de mensajes: {str(e)}")
+            return 0
+
+    def get_token_counts(self) -> Tuple[int, int]:
+        """
+        Obtiene el conteo total de tokens de entrada y salida.
+        
+        Returns:
+            Tuple[int, int]: (total_input_tokens, total_output_tokens)
+        """
+        return self.total_input_tokens, self.total_output_tokens
+
     def get_api_usage(self) -> Dict:
         """
         Obtiene información sobre el uso y límites de la API.
@@ -86,22 +154,18 @@ class LLMManager:
             logger.error(f"Error al obtener información de uso de API: {str(e)}")
             return {}
             
-    def calculate_cost(self, input_text: str, output_text: str) -> float:
+    def calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
         """
         Calcula el costo de una interacción basado en los tokens de entrada y salida.
         
         Args:
-            input_text: Texto de entrada enviado al modelo
-            output_text: Texto de respuesta recibido del modelo
+            input_tokens: Cantidad de tokens de entrada
+            output_tokens: Cantidad de tokens de salida
             
         Returns:
             float: Costo total de la interacción en dólares
         """
         try:
-            # Contar tokens
-            input_tokens = len(self.tokenizer.encode(input_text))
-            output_tokens = len(self.tokenizer.encode(output_text))
-            
             # Obtener costos del modelo actual
             model_costs = self.MODEL_COSTS.get(self.model, {
                 "input": 0.0000015,
@@ -155,8 +219,30 @@ class LLMManager:
         attempts = 0
         last_error = None
         
+        # Registrar el prompt en el archivo de log
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            logger.info(f"\n=== INICIO PROMPT [{operation}] ===")
+            logger.info(f"Timestamp: {timestamp}")
+            logger.info(f"Temperatura: {temperature}")
+            if max_tokens:
+                logger.info(f"Max tokens: {max_tokens}")
+            logger.info("Mensajes:")
+            for msg in messages:
+                logger.info(f"  Role: {msg['role']}")
+                logger.info(f"  Content:\n{msg['content']}\n")
+            logger.info(f"=== FIN PROMPT [{operation}] ===\n")
+            
+        except Exception as log_e:
+            logger.error(f"Error al registrar prompt: {str(log_e)}")
+        
         while attempts < self.MAX_RETRIES:
             try:
+                # Contar tokens de entrada antes de la llamada
+                input_tokens = self.count_messages_tokens(messages)
+                self.total_input_tokens += input_tokens
+                
                 # Preparar parámetros
                 params = {
                     "model": self.model,
@@ -176,20 +262,35 @@ class LLMManager:
                 # Obtener texto de respuesta
                 response_text = response.choices[0].message.content.strip()
                 
+                # Contar tokens de salida
+                output_tokens = self.count_tokens(response_text)
+                self.total_output_tokens += output_tokens
+                
                 # Calcular costo
-                input_text = " ".join([m["content"] for m in messages])
-                cost = self.calculate_cost(input_text, response_text)
+                cost = self.calculate_cost(input_tokens, output_tokens)
+                
+                # Registrar uso
+                logger.info(f"=== RESULTADO LLAMADA [{operation}] ===")
+                logger.info(f"Tokens entrada: {input_tokens}")
+                logger.info(f"Tokens salida: {output_tokens}")
+                logger.info(f"Tokens totales - Entrada: {self.total_input_tokens}, Salida: {self.total_output_tokens}")
+                logger.info(f"Costo: ${cost:.4f}")
+                logger.info("=== FIN RESULTADO ===\n")
                 
                 return response_text, cost
                 
             except openai.error.APIError as e:
                 last_error = APIError(operation, getattr(e, 'status_code', 500), str(e))
+                logger.error(f"Error API en {operation}: {str(e)}")
             except openai.error.Timeout:
                 last_error = APIError(operation, 408, "Timeout en la conexión")
+                logger.error(f"Timeout en {operation}")
             except openai.error.RateLimitError:
                 last_error = APIError(operation, 429, "Límite de rate excedido")
+                logger.error(f"Rate limit excedido en {operation}")
             except Exception as e:
                 last_error = ResponseError(f"Error inesperado: {str(e)}")
+                logger.error(f"Error inesperado en {operation}: {str(e)}")
                 
             attempts += 1
             if attempts < self.MAX_RETRIES:
@@ -227,11 +328,6 @@ class LLMManager:
             
         Returns:
             Tuple[str, float]: (Respuesta del LLM, costo de la interacción)
-            
-        Raises:
-            PromptError: Si hay un error en la construcción del prompt
-            APIError: Si hay un error en la comunicación con la API
-            ResponseError: Si hay un error en la respuesta
         """
         try:
             messages = []
@@ -272,68 +368,109 @@ class LLMManager:
                     "content": user_input
                 })
             
-            # Realizar llamada a la API
-            return self._make_api_call(
+            # Realizar llamada a la API y obtener respuesta
+            response_text, cost = self._make_api_call(
                 f"decision_{step}",
                 messages,
                 temperature=0.3
             )
+            
+            # Registrar la respuesta en el log
+            logger.info(f"=== RESPUESTA [{step}] ===")
+            logger.info(f"Texto de respuesta: {response_text}")
+            logger.info(f"Costo: ${cost:.4f}")
+            logger.info(f"Tokens acumulados - Entrada: {self.total_input_tokens}, Salida: {self.total_output_tokens}")
+            logger.info("=== FIN RESPUESTA ===\n")
+            
+            return response_text, cost
             
         except Exception as e:
             if isinstance(e, (APIError, PromptError, ResponseError)):
                 raise
             raise ResponseError(f"Error inesperado: {str(e)}")
 
-    def process_message(self, message: str, conversation_history: List[Tuple[str, str]]) -> Tuple[str, float]:
+    def start_new_conversation(self):
+        """Inicia una nueva conversación, limpiando el historial anterior."""
+        self.conversation_history = []
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.session_cost = 0.0
+        logger.info("Nueva conversación iniciada")
+
+    def add_message_to_history(self, role: str, content: str):
         """
-        Procesa un mensaje del usuario en el contexto de la conversación.
+        Agrega un mensaje al historial de la conversación.
         
         Args:
-            message: Mensaje del usuario
-            conversation_history: Lista de tuplas (rol, mensaje) del historial
+            role: Rol del mensaje ('system', 'user', 'assistant')
+            content: Contenido del mensaje
+        """
+        self.conversation_history.append({
+            "role": role,
+            "content": content
+        })
+
+    def get_conversation_messages(self) -> List[Dict]:
+        """
+        Obtiene todos los mensajes de la conversación actual.
+        
+        Returns:
+            List[Dict]: Lista de mensajes en formato ChatCompletion
+        """
+        return self.conversation_history.copy()
+
+    def process_message(self, 
+                       user_message: str,
+                       system_message: Optional[str] = None,
+                       temperature: float = 0.7) -> Tuple[str, float]:
+        """
+        Procesa un mensaje del usuario manteniendo el contexto de la conversación.
+        
+        Args:
+            user_message: Mensaje del usuario
+            system_message: Mensaje del sistema (opcional)
+            temperature: Temperatura para la generación
             
         Returns:
             Tuple[str, float]: (Respuesta del LLM, costo de la interacción)
         """
         try:
-            # Construir el historial de mensajes para el LLM
             messages = []
             
-            # Agregar el contexto inicial
-            messages.append({
-                "role": "system",
-                "content": (
-                    "Eres un asistente experto en el proceso de creación de carpetas "
-                    "para referencias de muebles. Tu objetivo es guiar al usuario "
-                    "a través del proceso, explicando cada paso y respondiendo sus dudas. "
-                    "Debes ser claro, conciso y profesional en tus respuestas."
-                )
-            })
-            
-            # Agregar el historial de la conversación
-            for role, content in conversation_history:
+            # Si hay un mensaje del sistema, agregarlo al inicio
+            if system_message:
                 messages.append({
-                    "role": "user" if role == "usuario" else "assistant",
-                    "content": content
+                    "role": "system",
+                    "content": system_message
                 })
+                self.add_message_to_history("system", system_message)
             
-            # Agregar el mensaje actual
+            # Agregar historial de conversación
+            messages.extend(self.get_conversation_messages())
+            
+            # Agregar mensaje actual del usuario
             messages.append({
                 "role": "user",
-                "content": message
+                "content": user_message
             })
+            self.add_message_to_history("user", user_message)
             
-            # Obtener respuesta del LLM y calcular costo
-            return self._make_api_call(
+            # Obtener respuesta
+            response_text, cost = self._make_api_call(
                 "process_message",
                 messages,
-                temperature=0.7  # Más creativo para el chat
+                temperature=temperature
             )
             
-        except Exception as e:
-            logger.error(f"Error al procesar mensaje con LLM: {str(e)}")
-            raise ValueError(f"Error en el procesamiento del mensaje: {str(e)}")
+            # Agregar respuesta al historial
+            self.add_message_to_history("assistant", response_text)
             
+            return response_text, cost
+            
+        except Exception as e:
+            logger.error(f"Error procesando mensaje: {str(e)}")
+            raise
+
     def format_reference_name(self, 
                             code: str, 
                             number: str, 
@@ -362,7 +499,7 @@ class LLMManager:
    - Cambiar "MARQUEZ" o "MARQUÉZ" por "MQZ"
    - Eliminar dimensiones como "71,5X210X34 CM"
    - Eliminar "(1C)", "(2C)", etc.
-   - Eliminar "_CAJA N/N"
+   - Eliminar "_CAJA"
    - Eliminar "HD", "IMAGEN", "DIMENSIONES"
    - Reemplazar "mas" por "+"
 
@@ -389,7 +526,7 @@ Devuelve SOLO el texto formateado, sin explicaciones."""
             response_text, cost = self._make_api_call(
                 "format_reference",
                 messages,
-                temperature=0.1  # Bajo para mantener consistencia
+                temperature=0.3  # Bajo para mantener consistencia
             )
             
             # Validar el formato de la respuesta
@@ -447,7 +584,7 @@ Responde SOLAMENTE con la ruta completa del archivo que recomiendas usar."""
                     "role": "user",
                     "content": prompt
                 }],
-                temperature=0.1
+                temperature=0.3
             )
             
         except Exception as e:
@@ -507,7 +644,7 @@ Si hay empate en prioridades, selecciona el que esté en la carpeta más cercana
                     "role": "user",
                     "content": prompt
                 }],
-                temperature=0.1  # Bajo para mantener consistencia
+                temperature=0.3  # Bajo para mantener consistencia
             )
             
         except Exception as e:
@@ -668,9 +805,122 @@ NO INCLUIR subcarpetas dentro de EDITABLES en tu respuesta."""
                     "role": "user",
                     "content": prompt
                 }],
-                temperature=0.1
+                temperature=0.3
             )
             
         except Exception as e:
             logger.error(f"Error al determinar estrategia de búsqueda: {str(e)}")
             raise ValueError(f"Error al determinar estrategia de búsqueda: {str(e)}") 
+
+    def determine_folder_structure(self, 
+                                source_path: str,
+                                reference_name: str,
+                                category: str) -> Tuple[str, float]:
+        """
+        Determina la estructura de carpetas óptima basada en la ruta origen.
+        
+        Args:
+            source_path: Ruta origen en la NAS
+            reference_name: Nombre de la referencia
+            category: Categoría del mueble
+
+        Returns:
+            Tuple[str, float]: (Estructura de carpetas sugerida, costo de la interacción)
+        """
+        prompt = f"""Como experto en organización de archivos de muebles RTA, necesito que determines la estructura de carpetas óptima y simplificada.
+
+INFORMACIÓN:
+Ruta origen: {source_path}
+Referencia: {reference_name}
+Categoría: {category}
+
+REGLAS PARA LA ESTRUCTURA:
+
+1. ESTRUCTURA BASE:
+   - Debe comenzar con la categoría principal (ej: DORMITORIO, COCINA, etc.). La categoría siempre debe estar escrita en singular.
+   - Debe terminar con la carpeta de la referencia específica
+   - Mantener SOLO 5 niveles máximo en la estructura
+
+2. ELIMINACIÓN DE CARPETAS:
+   - Eliminar TODAS las carpetas intermedias que contengan múltiples códigos de referencia
+     Ejemplo a eliminar: "CLW 928 - CLH 3534 - CLK 4870 - CBD 4976 - CLC 6509 - MAPA DE EMPAQUE"
+   - Eliminar TODAS las carpetas técnicas como:
+     * EDITABLE, EDITABLES
+     * 16MM, 3DM
+     * NUBE
+     * RENDERS, PDF, DWG, JPG
+   - Eliminar carpetas que solo contengan dimensiones o especificaciones técnicas
+
+3. MANEJO DE DUPLICADOS:
+   - Si una carpeta aparece repetida en la ruta, mantener SOLO UNA instancia
+     Ejemplo: "CLOSET AUSTRAL 3 PUERTAS\CLOSET AUSTRAL 3 PUERTAS" -> "CLOSET AUSTRAL 3 PUERTAS"
+   - Si el nombre del mueble aparece en múltiples niveles, mantener solo el más significativo
+
+4. COHERENCIA CON RUTAS PREDETERMINADAS:
+   - La primera carpeta después de las rutas predeterminadas debe coincidir exactamente con la carpeta correspondiente en las rutas de referencia proporcionadas.
+   - Rutas predeterminadas:
+     ```
+     @//192.168.200.250/ambientes
+     //192.168.200.250/baño
+     //192.168.200.250/cocina
+     //192.168.200.250/dormitorio
+     //192.168.200.250/mercadeo/ANIMACIÓN 3D
+     //192.168.200.250/mercadeo/IMAGENES MUEBLES
+     //192.168.200.250/rtadiseño/AMBIENTES.3
+     //192.168.200.250/rtadiseño/BAÑO.3
+     //192.182.200.250/rtadiseño/COCINA.3
+     //192.168.200.250/rtadiseño/DORMITORIO.3
+     //192.168.200.250/rtadiseño/MERCADEO.3/IMÁGENES MUEBLES
+     //192.168.200.250/rtadiseño/MERCADEO.3/ANIMACIONES
+     ```
+   - Ejemplo:
+     - Ruta origen: `@//192.168.200.250/dormitorio/Zapatero Alto Basico Odesto/ODESTO HIGH BASIC SHOE RACK/NUBE/ZLB 10556 - ZLM 10557 - ZLW 10950 - ISOMETRICO`
+     - Carpeta resultante debe comenzar con: `DORMITORIO/Zapatero Alto Basico ODESTO`
+     - Si la referencia invesitgada fue 'ZLW 10950¿' entonces la ruta completa debería quedar como: `DORMITORIO/Zapatero Alto Basico ODESTO/ODESTO HIGH BASIC SHOE RACK/ZLW 10950 - ODESTO HIGH BASIC SHOE RACK (WENGUE)`
+     - recuerda que la información es completada con la información recolectada en el paso anterior desde el google sheet.
+
+5. ESTRUCTURA FINAL DESEADA:
+   Debe seguir este patrón:
+   CATEGORÍA/TIPO DE MUEBLE/REFERENCIA FINAL
+   
+   Ejemplo:
+   Input: "DORMITORIO/CLOSET AUSTRAL 3 PUERTAS/CLOSET AUSTRAL 3 PUERTAS/CLW 928 - CLH 3534 - CLK 4870/CLW 9365 - CLOSET AUSTRAL 3 PUERTAS (WENGUE)"
+   Output: "DORMITORIO/CLOSET AUSTRAL 3 PUERTAS/CLW 9365 - CLOSET AUSTRAL 3 PUERTAS (WENGUE)"
+
+    La última carpeta que contiene la carpeta de la referencia debe corresponder a la descripción/nombre de la carpeta de la referencia.
+    Por ejemplo, la carpeta 'MLB 9364 - MUEBLE ELEMENTAL 65 PARA LAVAMANOS (BLANCO MQZ)' debería quedar dentro de la carpeta 'MUEBLE ELEMENTAL 65 PARA LAVAMANOS'.
+       
+    Generando una ruta completa como, por ejemplo:
+    "C:\\Users\\Usuario\\Desktop\\PEDIDOS MERCADEO 2\\BAÑO\\MUEBLE ELEMENTAL PARA LAVAMANOS\\MUEBLE ELEMENTAL 65 PARA LAVAMANOS\\MLB 9364 - MUEBLE ELEMENTAL 65 PARA LAVAMANOS (BLANCO MQZ)"
+
+6. FORMATO:
+   - Usar mayúsculas para todos los nombres
+   - Mantener caracteres especiales relevantes (guiones, espacios)
+   - Mantener información de color/acabado entre paréntesis
+   - No incluir extensiones de archivo
+
+7. IMPORTANTE:
+   - La estructura final NUNCA debe tener más de 5 niveles
+   - SIEMPRE mantener la referencia final completa con su descripción
+   - NUNCA incluir carpetas que solo contengan códigos de referencia
+   - SIEMPRE eliminar carpetas de "MAPA DE EMPAQUE" o similares
+   - Si una carpeta incluye nombres con números, puntos, o caracteres especiales que parecen ser parte de un formato (e.g., 120, 1.20, etc.), mantener el nombre original
+
+Analiza la ruta origen y proporciona SOLO la estructura de carpetas sugerida, separando niveles con '/'.
+Ejemplo correcto: "DORMITORIO/CLOSET AUSTRAL 3 PUERTAS/CLW 9365 - CLOSET AUSTRAL 3 PUERTAS (WENGUE)"
+
+NO incluyas explicaciones ni comentarios adicionales."""
+    
+        try:
+            return self._make_api_call(
+                "determine_folder_structure",
+                [{
+                    "role": "user",
+                    "content": prompt
+                }],
+                temperature=0.3  # Bajo para mantener consistencia
+            )
+            
+        except Exception as e:
+            logger.error(f"Error al determinar estructura de carpetas: {str(e)}")
+            raise ValueError(f"Error al determinar estructura de carpetas: {str(e)}") 
