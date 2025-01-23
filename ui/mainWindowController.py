@@ -63,9 +63,6 @@ class MainWindowController(QObject):
         # Configuración del gestor de creación de carpetas
         self.folder_creation_manager = None
         
-        # Configuración del gestor de chat
-        self.chat_manager = None
-        
         # Estado de la aplicación
         self.is_searching = False
         self.found_refs = set()
@@ -73,13 +70,17 @@ class MainWindowController(QObject):
         self.action_history = []
         self.custom_extensions = []
 
-        # Inicializar el chat_manager
+        # Inicializar y configurar el chat_manager
         self.chat_manager = ChatManager(self)
         
-        # Conectar señales después de inicializar chat_manager
+        # Conectar señales del chat si el panel existe
         if hasattr(self.main_window, 'chat_panel') and self.main_window.chat_panel is not None:
+            # Conectar señales del chat
+            self.main_window.chat_panel.message_sent.connect(self.chat_manager.handle_user_message)
+            self.chat_manager.llm_response.connect(self.main_window.chat_panel.append_message)
+            self.chat_manager.typing_status_changed.connect(self.main_window.chat_panel.set_typing_status)
             self.main_window.chat_panel.file_selected.connect(self.chat_manager.handle_file_selection)
-            logger.info("Señal file_selected conectada entre ChatPanel y ChatManager")
+            logger.info("Señales del chat conectadas correctamente")
         
         # Mostrar la ventana
         self.main_window.show()
@@ -92,105 +93,57 @@ class MainWindowController(QObject):
     def execute_folder_creation_mode(self):
         """
         Ejecuta el modo de creación de carpetas.
+        
+        Este método inicia una búsqueda normal pero con el tipo 'FolderCreation',
+        lo que hará que SearchThread solo busque en la base de datos.
+        Al terminar la búsqueda, on_search_finished iniciará el proceso de creación de carpetas.
         """
-        try:
-            # 1. Obtener referencias de la tabla
-            entry = self.main_window.entry
-            references = []
-            for row in range(entry.rowCount()):
-                item = entry.item(row, 0)
-                if item and item.text().strip():
-                    references.append(item.text().strip())
-                    
-            if not references:
-                self.main_window.status_label.setText("Por favor, ingresa al menos una referencia.")
+        # Verificar que hay referencias para buscar
+        entry = self.main_window.entry
+        has_references = False
+        for row in range(entry.rowCount()):
+            item = entry.item(row, 0)
+            if item and item.text().strip():
+                has_references = True
+                break
+                
+        if not has_references:
+            self.main_window.status_label.setText("Por favor, ingresa al menos una referencia.")
+            return
+            
+        # Verificar configuración de Google Sheets
+        if not self.folder_creation_manager:
+            google_sheet_key = self.config.get_google_sheet_key()
+            credentials_path = self.config.get_google_credentials_path()
+            
+            if not google_sheet_key:
+                QMessageBox.critical(
+                    self.main_window,
+                    "Error de Configuración",
+                    "No se ha configurado la clave de Google Sheets.\n"
+                    "Por favor, configúrela en el menú de configuración."
+                )
                 return
                 
-            # 2. Inicializar managers si no existen
-            if not self.folder_creation_manager:
-                # Obtener la clave de Google Sheets y ruta de credenciales
-                google_sheet_key = self.config.get_google_sheet_key()
-                credentials_path = self.config.get_google_credentials_path()
-                
-                if not google_sheet_key:
-                    QMessageBox.critical(
-                        self.main_window,
-                        "Error de Configuración",
-                        "No se ha configurado la clave de Google Sheets.\n"
-                        "Por favor, configúrela en el menú de configuración."
-                    )
-                    return
-                    
-                if not credentials_path:
-                    QMessageBox.critical(
-                        self.main_window,
-                        "Error de Configuración",
-                        "No se han configurado las credenciales de Google.\n"
-                        "Por favor, configúrelas en el menú de configuración."
-                    )
-                    return
-                    
-                # Inicializar el manager de creación de carpetas
-                self.folder_creation_manager = ReferenceFolderCreationManager(
-                    credentials_path,
-                    google_sheet_key,
-                    desktop_folder_name=self.config.get_desktop_folder_name(), # Nombre de la carpeta en el escritorio
-                    controller=self # Referencia al controlador principal
-                )
-                
-            if not self.chat_manager:
-                self.chat_manager = ChatManager(self)
-                
-            # 3. Desconectar señales existentes de forma segura
-            try:
-                self.main_window.chat_panel.message_sent.disconnect(self.chat_manager.handle_user_message)
-            except:
-                pass
-            
-            try:
-                self.chat_manager.llm_response.disconnect(self.main_window.chat_panel.append_message)
-            except:
-                pass
-            
-            try:
-                self.chat_manager.typing_status_changed.disconnect(self.main_window.chat_panel.set_typing_status)
-            except:
-                pass
-            
-            # 4. Conectar señales del chat
-            self.main_window.chat_panel.message_sent.connect(self.chat_manager.handle_user_message)
-            self.chat_manager.llm_response.connect(self.main_window.chat_panel.append_message)
-            self.chat_manager.typing_status_changed.connect(self.main_window.chat_panel.set_typing_status)
-            
-            # Conectar señal de selección de archivo si no está conectada
-            try:
-                self.main_window.chat_panel.file_selected.disconnect(self.chat_manager.handle_file_selection)
-            except:
-                pass
-            self.main_window.chat_panel.file_selected.connect(self.chat_manager.handle_file_selection)
-            logger.info("Señal file_selected reconectada en modo creación de carpetas")
-            
-            # 5. Limpiar el chat y comenzar el proceso
-            self.main_window.chat_panel.clear_chat()
-            self.chat_manager.start_folder_creation_process(references)
-            
-        except Exception as e:
-            # Si hay error de autenticación, reiniciar el manager
-            if "Error en autenticación con Google Sheets" in str(e):
-                self.folder_creation_manager = None
+            if not credentials_path:
                 QMessageBox.critical(
                     self.main_window,
-                    "Error de Autenticación",
-                    "Las credenciales de Google Sheets no son válidas.\n"
-                    "Por favor, configure nuevamente las credenciales."
+                    "Error de Configuración",
+                    "No se han configurado las credenciales de Google.\n"
+                    "Por favor, configúrelas en el menú de configuración."
                 )
-            else:
-                QMessageBox.critical(
-                    self.main_window,
-                    "Error",
-                    f"Error durante el proceso:\n{str(e)}"
-                )
-            self.main_window.status_label.setText("Error en el proceso.")
+                return
+                
+            # Inicializar el manager de creación de carpetas
+            self.folder_creation_manager = ReferenceFolderCreationManager(
+                credentials_path,
+                google_sheet_key,
+                desktop_folder_name=self.config.get_desktop_folder_name(),
+                controller=self
+            )
+        
+        # Iniciar la búsqueda normal - SearchThread manejará el tipo 'FolderCreation'
+        self.start_search()
 
     def handle_paste(self):
         """Maneja la acción de pegar desde el portapapeles."""
@@ -304,12 +257,11 @@ class MainWindowController(QObject):
         
     def toggle_search_buttons(self, button):
         """
-        Alterna los botones de tipo de búsqueda.
+        Alterna los botones de tipo de búsqueda y actualiza el tipo de búsqueda.
         
         Args:
             button: Botón que fue presionado
         """
-        # Desmarcamos todos los botones excepto el presionado
         buttons = [
             self.main_window.button_referencia,
             self.main_window.button_nombre,
@@ -319,11 +271,8 @@ class MainWindowController(QObject):
         for btn in buttons:
             if btn != button:
                 btn.setChecked(False)
-        
-        # Aseguramos que el botón presionado esté marcado
         button.setChecked(True)
-        
-        # Actualizamos el tipo de búsqueda
+
         if button == self.main_window.button_referencia:
             self.main_window.search_type = 'Referencia'
             self.main_window.chat_panel.hide()
@@ -337,7 +286,7 @@ class MainWindowController(QObject):
         self.main_window.updateButtonTextsAndLabels()
         self.results_manager.update_results_headers()
         self.main_window.results.clear()
-        
+
     def handle_search(self):
         """
         Maneja el inicio o detención de la búsqueda según el tipo seleccionado.
@@ -397,10 +346,46 @@ class MainWindowController(QObject):
         Maneja la finalización de la búsqueda.
         
         Args:
-            results_dict: Diccionario con los resultados
+            results_dict: Diccionario con los resultados de la búsqueda.
+                         Las claves son los índices de las referencias y
+                         los valores son listas de tuplas (path, tipo, referencia).
         """
+        # Procesar y mostrar resultados en la UI
         self.results_manager.process_final_results(results_dict)
         self.update_action_buttons_state()
+        
+        # Si es búsqueda con creación de carpetas, iniciar el proceso de creación
+        if self.main_window.search_type == 'FolderCreation':
+            # Obtener referencias y sus resultados
+            references_with_results = {}
+            entry = self.main_window.entry
+            
+            # Recorrer las referencias de la tabla
+            for row in range(entry.rowCount()):
+                item = entry.item(row, 0)
+                if item and item.text().strip():
+                    reference = item.text().strip()
+                    # Buscar los resultados para esta referencia
+                    if row in results_dict:
+                        # Filtrar solo resultados de tipo "Carpeta"
+                        folder_results = [
+                            path for path, tipo, _ in results_dict[row] 
+                            if tipo == "Carpeta"
+                        ]
+                        if folder_results:
+                            references_with_results[reference] = folder_results
+                        else:
+                            references_with_results[reference] = []
+                    else:
+                        references_with_results[reference] = []
+            
+            # Iniciar el proceso de creación de carpetas con los resultados
+            if self.chat_manager:
+                self.main_window.chat_panel.clear_chat()
+                self.chat_manager.start_folder_creation_process(
+                    list(references_with_results.keys()),
+                    references_with_results
+                )
         
     def toggle_other_lineedit(self):
         """Habilita o deshabilita el campo de texto para otros tipos de archivo."""

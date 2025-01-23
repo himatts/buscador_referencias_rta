@@ -495,7 +495,7 @@ class LLMManager:
    - Mantener el nombre del mueble exactamente como está
    - Poner TODOS los colores/materiales entre paréntesis al final
    - Usar "+" con espacios alrededor para separar colores: "COLOR1 + COLOR2"
-   - Mantener guiones en nombres compuestos: "DUNA-BLANCO"
+   - Mantener guiones en nombres compuestos: "DUNA-BLANCO" o cambiar por "-" cuando el nombre original tiene una barra '/' para dividir los colores compuestos.
    - Cambiar "MARQUEZ" o "MARQUÉZ" por "MQZ"
    - Eliminar dimensiones como "71,5X210X34 CM"
    - Eliminar "(1C)", "(2C)", etc.
@@ -507,6 +507,7 @@ class LLMManager:
    - SIEMPRE usar paréntesis para los colores/materiales
    - NUNCA perder información de colores/materiales
    - SIEMPRE mantener el espacio entre código y número
+   - SIEMPRE cambiar el símbolo / o \  por un guión '-'
 
 Información a formatear:
 Código: {code}
@@ -834,10 +835,26 @@ Ruta origen: {source_path}
 Referencia: {reference_name}
 Categoría: {category}
 
+ANÁLISIS DE CATEGORÍA:
+1. Si la categoría NO está especificada, debes RAZONAR la categoría correcta siguiendo estas reglas:
+   - Analiza el TIPO DE MUEBLE y su USO PRINCIPAL
+   - Categorías válidas son: AMBIENTE, OFICINA, COCINA, BAÑO Y DORMITORIO
+   - Ejemplos de razonamiento:
+     * "Centro de Cómputo" -> OFICINA (porque es un escritorio para computadora)
+     * "Biblioteca Lisa" -> OFICINA (porque es un estante para libros)
+     * "Closet Austral" -> DORMITORIO (porque es un closet para guardar ropa)
+   - NO crear nuevas categorías fuera de las listadas
+   - NO usar el nombre del mueble como categoría
+
+2. PRIORIDAD DE ASIGNACIÓN:
+   a) Si viene especificada en el campo 'Categoría', usar esa
+   b) Si no viene especificada, analizar la ruta origen buscando la categoría en las rutas predeterminadas
+   c) Si aún no es clara, RAZONAR basado en el uso principal del mueble
+
 REGLAS PARA LA ESTRUCTURA:
 
 1. ESTRUCTURA BASE:
-   - Debe comenzar con la categoría principal (ej: DORMITORIO, COCINA, etc.). La categoría siempre debe estar escrita en singular.
+   - Debe comenzar con la categoría principal (AMBIENTE, OFICINA, COCINA, BAÑO Y DORMITORIO). La categoría siempre debe estar escrita en singular.
    - Debe terminar con la carpeta de la referencia específica
    - Mantener SOLO 5 niveles máximo en la estructura
 
@@ -859,8 +876,8 @@ REGLAS PARA LA ESTRUCTURA:
 4. COHERENCIA CON RUTAS PREDETERMINADAS:
    - La primera carpeta después de las rutas predeterminadas debe coincidir exactamente con la carpeta correspondiente en las rutas de referencia proporcionadas.
    - Rutas predeterminadas:
-     ```
-     @//192.168.200.250/ambientes
+    
+     //192.168.200.250/ambientes
      //192.168.200.250/baño
      //192.168.200.250/cocina
      //192.168.200.250/dormitorio
@@ -872,42 +889,50 @@ REGLAS PARA LA ESTRUCTURA:
      //192.168.200.250/rtadiseño/DORMITORIO.3
      //192.168.200.250/rtadiseño/MERCADEO.3/IMÁGENES MUEBLES
      //192.168.200.250/rtadiseño/MERCADEO.3/ANIMACIONES
-     ```
+     
    - Ejemplo:
-     - Ruta origen: `@//192.168.200.250/dormitorio/Zapatero Alto Basico Odesto/ODESTO HIGH BASIC SHOE RACK/NUBE/ZLB 10556 - ZLM 10557 - ZLW 10950 - ISOMETRICO`
-     - Carpeta resultante debe comenzar con: `DORMITORIO/Zapatero Alto Basico ODESTO`
-     - Si la referencia invesitgada fue 'ZLW 10950¿' entonces la ruta completa debería quedar como: `DORMITORIO/Zapatero Alto Basico ODESTO/ODESTO HIGH BASIC SHOE RACK/ZLW 10950 - ODESTO HIGH BASIC SHOE RACK (WENGUE)`
+     - Ruta origen: `//192.168.200.250/dormitorio/Zapatero Alto Basico Odesto/ODESTO HIGH BASIC SHOE RACK/NUBE/ZLB 10556 - ZLM 10557 - ZLW 10950 - ISOMETRICO`
+     - Carpeta resultante debe comenzar con: `DORMITORIO/ZAPATERO ALTO BASICO ODESTO`
+     - Si la referencia invesitgada fue 'ZLW 10950' entonces la ruta completa debería quedar como: `DORMITORIO/Zapatero Alto Basico ODESTO/ODESTO HIGH BASIC SHOE RACK/ZLW 10950 - ODESTO HIGH BASIC SHOE RACK (WENGUE)`
      - recuerda que la información es completada con la información recolectada en el paso anterior desde el google sheet.
 
 5. ESTRUCTURA FINAL DESEADA:
-   Debe seguir este patrón:
+   Debe seguir uno de estos dos patrones según el caso:
+
+   CASO 1 - PRODUCTO SIMPLE:
    CATEGORÍA/TIPO DE MUEBLE/REFERENCIA FINAL
+   Ejemplo: "BIBLIOTECA/BIBLIOTECA LISA EASY/BLB 7602 - BIBLIOTECA LISA EASY (BELLOTA)"
+
+   CASO 2 - PRODUCTO CON SUBREFERENCIA:
+   CATEGORÍA/TIPO DE MUEBLE BASE/NOMBRE ESPECÍFICO/REFERENCIA FINAL
+   Ejemplo: "DORMITORIO/ZAPATERO ALTO BASICO ODESTO/ODESTO HIGH BASIC SHOE RACK/ZLW 10950 - ODESTO HIGH BASIC SHOE RACK (WENGUE)"
+
+   REGLAS DE DECISIÓN:
+   1. Si en la ruta origen existe una carpeta adicional que especifica una variante o nombre específico del producto (como 'ODESTO HIGH BASIC SHOE RACK'), mantenerla como nivel adicional
+   2. Si la ruta origen solo muestra el nombre básico del producto, usar el CASO 1
+   3. La referencia final (último nivel) SIEMPRE debe mantener el código y nombre completo con color/acabado
+
+   IMPORTANTE:
+   - La estructura nunca debe exceder 4 niveles
+   - El último nivel SIEMPRE debe contener el código de referencia
+   - Los niveles intermedios NUNCA deben contener códigos de referencia
+
+6. VALIDACIÓN FINAL OBLIGATORIA:
+   Antes de responder, verifica que la estructura propuesta cumpla con TODAS estas condiciones:
+   1. ¿Tiene máximo 4 niveles separados por '/'?
+   2. ¿El primer nivel es una CATEGORÍA VÁLIDA (AMBIENTE, OFICINA, COCINA, BAÑO Y DORMITORIO) en singular y mayúsculas?
+   3. ¿La categoría fue determinada correctamente según el uso del mueble y no solo por su nombre?
+   4. ¿El último nivel contiene el código de referencia y nombre completo?
+   5. ¿Los niveles intermedios NO contienen códigos de referencia?
+   6. ¿Se mantiene el nombre específico del producto si existía en la ruta origen?
+   7. ¿Se eliminaron todas las carpetas técnicas (EDITABLE, NUBE, etc.)?
+   8. ¿Se eliminaron las carpetas con múltiples referencias?
    
-   Ejemplo:
-   Input: "DORMITORIO/CLOSET AUSTRAL 3 PUERTAS/CLOSET AUSTRAL 3 PUERTAS/CLW 928 - CLH 3534 - CLK 4870/CLW 9365 - CLOSET AUSTRAL 3 PUERTAS (WENGUE)"
-   Output: "DORMITORIO/CLOSET AUSTRAL 3 PUERTAS/CLW 9365 - CLOSET AUSTRAL 3 PUERTAS (WENGUE)"
-
-    La última carpeta que contiene la carpeta de la referencia debe corresponder a la descripción/nombre de la carpeta de la referencia.
-    Por ejemplo, la carpeta 'MLB 9364 - MUEBLE ELEMENTAL 65 PARA LAVAMANOS (BLANCO MQZ)' debería quedar dentro de la carpeta 'MUEBLE ELEMENTAL 65 PARA LAVAMANOS'.
-       
-    Generando una ruta completa como, por ejemplo:
-    "C:\\Users\\Usuario\\Desktop\\PEDIDOS MERCADEO 2\\BAÑO\\MUEBLE ELEMENTAL PARA LAVAMANOS\\MUEBLE ELEMENTAL 65 PARA LAVAMANOS\\MLB 9364 - MUEBLE ELEMENTAL 65 PARA LAVAMANOS (BLANCO MQZ)"
-
-6. FORMATO:
-   - Usar mayúsculas para todos los nombres
-   - Mantener caracteres especiales relevantes (guiones, espacios)
-   - Mantener información de color/acabado entre paréntesis
-   - No incluir extensiones de archivo
-
-7. IMPORTANTE:
-   - La estructura final NUNCA debe tener más de 5 niveles
-   - SIEMPRE mantener la referencia final completa con su descripción
-   - NUNCA incluir carpetas que solo contengan códigos de referencia
-   - SIEMPRE eliminar carpetas de "MAPA DE EMPAQUE" o similares
-   - Si una carpeta incluye nombres con números, puntos, o caracteres especiales que parecen ser parte de un formato (e.g., 120, 1.20, etc.), mantener el nombre original
+   Si alguna condición no se cumple, ajusta la estructura antes de responder.
 
 Analiza la ruta origen y proporciona SOLO la estructura de carpetas sugerida, separando niveles con '/'.
 Ejemplo correcto: "DORMITORIO/CLOSET AUSTRAL 3 PUERTAS/CLW 9365 - CLOSET AUSTRAL 3 PUERTAS (WENGUE)"
+Ejemplo correcto 2: "COCINA/MODULO MICROONDAS BAJO KIT/MBB 7603 - MODULO MICROONDAS BAJO KIT (BLANCO MQZ + BELLOTA-BLANCO)"
 
 NO incluyas explicaciones ni comentarios adicionales."""
     
@@ -918,7 +943,7 @@ NO incluyas explicaciones ni comentarios adicionales."""
                     "role": "user",
                     "content": prompt
                 }],
-                temperature=0.3  # Bajo para mantener consistencia
+                temperature=0.2  # Bajo para mantener consistencia
             )
             
         except Exception as e:

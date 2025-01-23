@@ -181,12 +181,14 @@ class ChatManager(QObject):
             
         self.current_step = next_step
         
-    def start_folder_creation_process(self, references: List[str]):
+    def start_folder_creation_process(self, references: List[str], db_results: Optional[Dict[str, List[str]]] = None):
         """
         Inicia el proceso de creación de carpetas.
         
         Args:
             references: Lista de referencias a procesar
+            db_results: Diccionario opcional con los resultados de la búsqueda en BD.
+                       Las claves son las referencias y los valores son listas de rutas.
         """
         try:
             if not references:
@@ -205,15 +207,34 @@ class ChatManager(QObject):
             # Mensaje inicial del sistema
             welcome_message = (
                 "¡Hola! Soy el asistente de RTA y te ayudaré en el proceso de "
-                "creación de carpetas para las referencias. Primero, verificaré "
-                "las referencias en la base de datos."
+                "creación de carpetas para las referencias."
             )
             self.llm_response.emit("Sistema", welcome_message, False)
             
-            # Transición al primer paso
+            # Si ya tenemos resultados de la BD, guardarlos en el contexto
+            if db_results:
+                # Clasificar referencias encontradas y no encontradas
+                found_refs = []
+                not_found_refs = []
+                
+                for ref in references:
+                    paths = db_results.get(ref, [])
+                    if paths:
+                        found_refs.append(ref)
+                    else:
+                        not_found_refs.append(ref)
+                
+                self.step_context = {
+                    'db_results': db_results,
+                    'found_refs': found_refs,
+                    'not_found_refs': not_found_refs,
+                    'total_refs': len(references)
+                }
+            
+            # Siempre empezar por verificar referencias
             self._transition_to_step(self.ESTADO_VERIFICAR_REFERENCIAS)
             
-            # Iniciar el proceso de verificación
+            # Iniciar el proceso
             self.process_next_step()
             
         except Exception as e:
@@ -342,13 +363,81 @@ class ChatManager(QObject):
             self.error_occurred.emit(self.current_step, str(e))
             self._transition_to_step(self.ESTADO_ERROR)
 
+    def process_single_reference(self):
+        """
+        Procesa una única referencia de forma secuencial, manejando los mensajes en el orden correcto.
+        """
+        try:
+            # Verificar si hay referencias pendientes
+            if not self.pending_rhino_selection or not self.pending_rhino_selection.get("pending_files"):
+                logger.warning("No hay referencias pendientes para procesar")
+                return
+
+            # Obtener la referencia actual
+            current_ref = self.pending_rhino_selection["original"]
+            ref_data = self.pending_rhino_selection["pending_files"][current_ref]
+
+            # 1. Mostrar mensaje solicitando la selección del archivo Rhino
+            message = f"\nPor favor, selecciona el archivo Rhino para la referencia: {current_ref}"
+            
+            # Obtener las alternativas de archivos Rhino
+            rhino_alternatives = []
+            if ref_data.get("files_info", {}).get("rhino_alternatives"):
+                rhino_alternatives = ref_data["files_info"]["rhino_alternatives"]
+            
+            if rhino_alternatives:
+                # 2. Si hay múltiples archivos, mostrar la lista
+                message += "\nSe han encontrado los siguientes archivos Rhino:\n"
+                
+                for i, path in enumerate(rhino_alternatives):
+                    if i > 0:
+                        message += "\n---\n"  # Divisor entre archivos
+                        
+                    file_name = os.path.basename(path)
+                    # Botón para abrir carpeta
+                    folder_button = {
+                        'text': "📁 Abrir carpeta",
+                        'path': os.path.dirname(path),
+                        'type': 'folder'
+                    }
+                    # Botón para abrir archivo
+                    file_button = {
+                        'text': "📄 Abrir archivo",
+                        'path': path,
+                        'type': 'rhino'
+                    }
+                    # Botón para elegir archivo
+                    choose_button = {
+                        'text': "✅ Elegir este archivo",
+                        'path': path,
+                        'type': 'choose_rhino'
+                    }
+                    
+                    message += f"\n<b>{file_name}</b>\n"
+                    message += f"<file_button>{folder_button}</file_button> "
+                    message += f"<file_button>{file_button}</file_button> "
+                    message += f"<file_button>{choose_button}</file_button>"
+                
+                # Botón para omitir al final, después de un divisor
+                message += "\n\n---\n\n"
+                skip_button = {
+                    'text': "❌ Omitir archivo Rhino",
+                    'path': '',
+                    'type': 'skip_rhino'
+                }
+                message += f"<file_button>{skip_button}</file_button>"
+
+            self.llm_response.emit("Sistema", message, False)
+
+        except Exception as e:
+            logger.error(f"Error al procesar referencia: {str(e)}")
+            error_msg = self._handle_error(e)
+            self.llm_response.emit("Sistema", error_msg, True)
+            self._transition_to_step(self.ESTADO_ERROR)
+
     def handle_file_selection(self, file_path: str, selection_type: str):
         """
         Maneja la selección de archivos desde los botones del chat.
-        
-        Args:
-            file_path: Ruta del archivo seleccionado
-            selection_type: Tipo de selección ('choose_rhino', 'skip_rhino', etc.)
         """
         try:
             logger.info(f"ChatManager: Recibida selección - Path: {file_path}, Type: {selection_type}")
@@ -363,54 +452,52 @@ class ChatManager(QObject):
 
             ref_data = self.pending_rhino_selection
             original_ref = ref_data.get('original')
-            logger.info(f"Procesando selección para referencia: {original_ref}")
-
-            if selection_type == 'choose_rhino' and file_path and os.path.exists(file_path):
-                # Completar la creación de carpetas con el archivo seleccionado
-                logger.info(f"Completando creación con archivo seleccionado: {file_path}")
+            pending_files = ref_data.get('pending_files', {})
+            
+            # Procesar la selección actual
+            if selection_type in ['choose_rhino', 'skip_rhino']:
+                selected_rhino = file_path if selection_type == 'choose_rhino' else None
                 results = self.controller.folder_creation_manager.complete_folder_creation(
                     ref_key=original_ref,
-                    selected_rhino=file_path
+                    selected_rhino=selected_rhino
                 )
                 
-                if results["errors"]:
-                    # Si hay errores, mostrarlos
-                    error_msg = "\n".join(error.replace('**', '') for error in results["errors"])
-                    logger.error(f"Errores en creación: {error_msg}")
+                # 4. Mostrar mensaje de éxito para la referencia actual
+                if not results.get("errors"):
                     self.llm_response.emit(
                         "Sistema",
-                        f"❌ Error al crear carpeta: {error_msg}",
-                        True
+                        f"✅ Carpeta creada exitosamente para {original_ref}",
+                        False
                     )
                 else:
-                    logger.info("Creación completada exitosamente")
-                    # Mostrar resumen de la carpeta creada
-                    self._show_final_summary(results)
-                
-            elif selection_type == 'skip_rhino':
-                # Completar la creación de carpetas sin archivo Rhino
-                logger.info("Completando creación sin archivo Rhino")
-                results = self.controller.folder_creation_manager.complete_folder_creation(
-                    ref_key=original_ref,
-                    selected_rhino=None
-                )
-                
-                if results["errors"]:
                     error_msg = "\n".join(error.replace('**', '') for error in results["errors"])
-                    logger.error(f"Errores en creación: {error_msg}")
                     self.llm_response.emit(
                         "Sistema",
-                        f"❌ Error al crear carpeta: {error_msg}",
+                        f"❌ Error al crear carpeta para {original_ref}: {error_msg}",
                         True
                     )
+                
+                # Eliminar la referencia actual de pendientes
+                if original_ref in pending_files:
+                    del pending_files[original_ref]
+                
+                # 5. Pequeña pausa antes de continuar (implementada a través del tiempo de procesamiento)
+                
+                # 6. Procesar siguiente referencia si hay pendientes
+                if pending_files:
+                    next_ref = next(iter(pending_files))
+                    self.pending_rhino_selection = {
+                        "original": next_ref,
+                        "pending_files": pending_files,
+                        **pending_files[next_ref]
+                    }
+                    # Procesar la siguiente referencia
+                    self.process_single_reference()
                 else:
-                    logger.info("Creación completada exitosamente")
+                    # No hay más referencias pendientes, mostrar resumen final
                     self._show_final_summary(results)
-
-            # Limpiar la selección pendiente y continuar con el proceso
-            self.pending_rhino_selection = None
-            self._transition_to_step(self.ESTADO_FINALIZADO)
-            logger.info("Proceso de selección completado")
+                    self.pending_rhino_selection = None
+                    self._transition_to_step(self.ESTADO_FINALIZADO)
 
         except Exception as e:
             logger.error(f"Error al manejar selección de archivo: {str(e)}")
@@ -430,57 +517,30 @@ class ChatManager(QObject):
                 return
 
             if self.current_step == self.ESTADO_VERIFICAR_REFERENCIAS:
-                # Obtener resultados de la búsqueda en base de datos
-                db_results = self.controller.folder_creation_manager.search_in_database_only(self.current_references)
-                
-                # Clasificar referencias encontradas y no encontradas
-                found_refs = []
-                not_found_refs = []
-                found_count = 0
-                
-                # Limpiar tabla de resultados y resultados anteriores
-                self.controller.main_window.results.clear()
-                self.controller.found_refs = set()
-                self.controller.searched_refs = set(self.current_references)
-                
-                # Procesar y mostrar resultados en la tabla
-                for ref in self.current_references:
-                    paths = db_results.get(ref, [])
-                    if paths:
-                        found_refs.append(ref)
-                        # Procesar cada ruta encontrada
-                        for path in paths:
-                            file_type = "Carpeta" if os.path.isdir(path) else "Archivo"
-                            # Añadir a la tabla de resultados
-                            self.controller.results_manager.add_result_item(
-                                found_count,
-                                path,
-                                file_type,
-                                ref
-                            )
-                        found_count += 1
-                        self.controller.found_refs.add(ref)
-                    else:
-                        not_found_refs.append(ref)
-                
-                # Actualizar etiquetas y contadores
-                self.controller.main_window.ref_info_label.setText(
-                    f"Referencias encontradas: {len(found_refs)} | No encontradas: {len(not_found_refs)}"
-                )
-                
-                # Actualizar contexto
-                self.step_context = {
-                    'found_refs': found_refs,
-                    'not_found_refs': not_found_refs,
-                    'total_refs': len(self.current_references),
-                    'db_results': db_results
-                }
+                # Solo buscar en la base de datos si no tenemos resultados previos
+                if 'db_results' not in self.step_context:
+                    logger.warning("No hay resultados de búsqueda previos. Se requiere ejecutar SearchThread primero.")
+                    self.llm_response.emit(
+                        "Sistema",
+                        "Error: No se encontraron resultados de búsqueda. Por favor, inicia la búsqueda primero.",
+                        True
+                    )
+                    return
                 
                 # Generar mensaje informativo para el chat
+                found_refs = self.step_context['found_refs']
+                not_found_refs = self.step_context['not_found_refs']
+                
                 message = f"He encontrado {len(found_refs)} referencias en la base de datos"
                 if not_found_refs:
                     message += f" y {len(not_found_refs)} no fueron encontradas"
                 message += ".\n\n"
+                
+                if found_refs:
+                    message += "Referencias encontradas:\n"
+                    for ref in found_refs:
+                        message += f"- {ref}\n"
+                    message += "\n"
                 
                 if not_found_refs:
                     message += "Referencias no encontradas:\n"
@@ -542,13 +602,12 @@ class ChatManager(QObject):
                                     break
                         
                         # Actualizar contexto - asegurarnos de guardar solo los campos necesarios
-                        self.step_context = {
+                        self.step_context.update({
                             'formatted_refs': [{
                                 'original': ref['original'],
                                 'nombre_formateado': ref['nombre_formateado'][0] if isinstance(ref['nombre_formateado'], tuple) else ref['nombre_formateado']
-                            } for ref in refs_without_errors],
-                            'db_results': self.step_context.get('db_results', {})
-                        }
+                            } for ref in refs_without_errors]
+                        })
                         
                         logger.info(f"Contexto actualizado: {self.step_context}")
                         
@@ -631,10 +690,13 @@ class ChatManager(QObject):
                         ref_key = next(iter(results["pending_files"]))
                         self.pending_rhino_selection = {
                             "original": ref_key,
+                            "pending_files": results["pending_files"],
                             **results["pending_files"][ref_key]
                         }
                         
                         self._transition_to_step(self.ESTADO_SELECCIONAR_RHINO)
+                        # Iniciar el proceso secuencial para la primera referencia
+                        self.process_single_reference()
                         return
                     
                     # Si no hay archivos pendientes, mostrar el resumen final

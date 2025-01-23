@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import logging
+import json
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -29,11 +30,10 @@ class ReferenceFolderCreationManager:
     Gestor para la nueva funcionalidad de búsqueda de referencias con creación de carpetas.
     
     Esta clase se encarga de:
-    1. Buscar referencias en la base de datos
-    2. Leer datos de Google Sheets
-    3. Reformatear referencias según reglas
-    4. Crear estructura de carpetas
-    5. Copiar archivos relevantes
+    1. Leer datos de Google Sheets
+    2. Reformatear referencias según reglas
+    3. Crear estructura de carpetas
+    4. Copiar archivos relevantes
     """
 
     def __init__(self, 
@@ -42,20 +42,41 @@ class ReferenceFolderCreationManager:
                  desktop_folder_name: str = "PEDIDOS MERCADEO",
                  controller=None):
         """
-        Inicializa el gestor.
-
+        Inicializa el gestor de creación de carpetas.
+        
         Args:
-            google_credentials_path: Ruta al archivo JSON de credenciales de servicio
-            google_sheet_key: ID de la hoja de Google Sheets
-            desktop_folder_name: Nombre de la carpeta a crear en el escritorio
+            google_credentials_path: Ruta al archivo de credenciales de Google
+            google_sheet_key: Clave de la hoja de Google Sheets
+            desktop_folder_name: Nombre de la carpeta en el escritorio
             controller: Referencia al controlador principal
         """
+        logger.info("Inicializando ReferenceFolderCreationManager...")
+        
+        # Validar parámetros
+        if not google_credentials_path or not os.path.exists(google_credentials_path):
+            raise ValueError("Ruta de credenciales de Google inválida")
+            
+        if not google_sheet_key:
+            raise ValueError("Clave de Google Sheets no proporcionada")
+            
+        # Guardar configuración
         self.google_credentials_path = google_credentials_path
         self.google_sheet_key = google_sheet_key
         self.desktop_folder_name = desktop_folder_name
         self.controller = controller
-        self.gc = None
+        
+        # Inicializar LLM
         self.llm = LLMManager()
+        
+        # Inicializar Google Client
+        self.gc = None
+        try:
+            self._authenticate_google_sheets()
+        except Exception as e:
+            logger.error(f"Error inicial al autenticar con Google Sheets: {e}")
+            
+        # Estado del procesamiento
+        self._processing_state = {}
         
         # Rutas base que no deben ser descendidas
         self.root_paths = [
@@ -73,62 +94,7 @@ class ReferenceFolderCreationManager:
             "\\\\192.168.200.250\\rtadiseño\\MERCADEO.3\\ANIMACIONES"
         ]
         
-        logger.info("Inicializando ReferenceFolderCreationManager...")
-
-    def search_in_database_only(self, references: List[str]) -> Dict[str, List[str]]:
-        """
-        Busca las referencias únicamente en la base de datos local.
-        
-        Args:
-            references: Lista de referencias a buscar
-
-        Returns:
-            Dict con las rutas encontradas por referencia
-        """
-        logger.info("=== INICIO BÚSQUEDA EN BASE DE DATOS ===")
-        results = {}
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            for ref in references:
-                logger.info(f"Buscando referencia: {ref}")
-                normalized_ref = normalize_text(ref)
-                
-                query = """
-                    SELECT path 
-                    FROM folder_references
-                    WHERE folder_name LIKE ? 
-                      AND is_deleted = 0
-                    ORDER BY 
-                        CASE 
-                            WHEN LOWER(path) LIKE '%instructivo%' THEN 1
-                            WHEN LOWER(path) LIKE '%\\nube\\%' THEN 2
-                            ELSE 3
-                        END,
-                        path
-                """
-                
-                cursor.execute(query, (f"%{normalized_ref}%",))
-                paths = cursor.fetchall()
-                
-                if paths:
-                    results[ref] = [path[0] for path in paths]
-                    logger.info(f"✓ Encontradas {len(paths)} rutas")
-                else:
-                    results[ref] = []
-                    logger.warning(f"✗ No se encontraron rutas")
-            
-            logger.info("=== FIN BÚSQUEDA EN BASE DE DATOS ===")
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error en búsqueda: {str(e)}")
-            raise
-            
-        finally:
-            if 'conn' in locals():
-                conn.close()
+        logger.info("ReferenceFolderCreationManager inicializado correctamente")
 
     def fetch_and_format_with_sheets(self, references: List[str]) -> List[dict]:
         """
@@ -141,9 +107,21 @@ class ReferenceFolderCreationManager:
             Lista de diccionarios con la información formateada
         """
         logger.info("=== INICIO BÚSQUEDA EN GOOGLE SHEETS ===")
+        
+        # Verificar que tenemos credenciales configuradas
+        if not self.google_credentials_path or not os.path.exists(self.google_credentials_path):
+            error_msg = "No se han configurado las credenciales de Google Sheets o el archivo no existe"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+            
         if not self.gc:
             logger.info("Iniciando autenticación con Google Sheets")
-            self._authenticate_google_sheets()
+            try:
+                self._authenticate_google_sheets()
+            except Exception as e:
+                error_msg = f"Error al autenticar con Google Sheets: {str(e)}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
             
         formatted_refs = []
         
@@ -291,9 +269,15 @@ class ReferenceFolderCreationManager:
                 current_state["current_index"] += 1
                 return self.create_folders_and_copy_files(formatted_refs, db_results)
             
-            # Procesar la primera ruta encontrada
-            source_folder = db_results[original_ref][0]
-            logger.info(f"Procesando ruta: {source_folder}")
+            # Buscar la carpeta preferida (priorizando la que contiene "instructivo")
+            try:
+                source_folder = self._find_preferred_folder(original_ref)
+                logger.info(f"✓ Carpeta preferida seleccionada: {source_folder}")
+            except Exception as e:
+                logger.warning(f"No se pudo encontrar carpeta preferida: {str(e)}")
+                # Fallback: usar la primera ruta disponible
+                source_folder = db_results[original_ref][0]
+                logger.info(f"Usando primera ruta disponible: {source_folder}")
             
             # Buscar archivos sin copiarlos
             files_info = self._copy_files(source_folder, None)
@@ -301,11 +285,18 @@ class ReferenceFolderCreationManager:
             # Si necesitamos esperar selección de archivo Rhino
             if files_info.get("waiting_for_rhino"):
                 logger.info("Esperando selección de archivo Rhino")
+                # Guardar toda la información necesaria en el estado
                 current_state["pending_files"][original_ref] = {
                     "source_folder": source_folder,
                     "final_name": final_name,
                     "category": category,
-                    "files_info": files_info
+                    "files_info": {
+                        "pdf": files_info.get("pdf"),
+                        "rhino": files_info.get("rhino"),
+                        "rhino_alternatives": files_info.get("rhino_alternatives", []),
+                        "errors": files_info.get("errors", []),
+                        "waiting_for_rhino": True
+                    }
                 }
                 return {
                     "processed": current_state["processed"],
@@ -451,24 +442,18 @@ class ReferenceFolderCreationManager:
         Returns:
             Nombre sanitizado
         """
-        # 1. Reemplazar caracteres que Windows interpreta como separadores
-        name = name.replace("\\", "-").replace("/", "-")
-        
-        # 2. Eliminar otros caracteres ilegales en Windows
-        invalid_chars = ['<', '>', ':', '"', '|', '?', '*']
+        # 1. Eliminar caracteres ilegales en Windows
+        invalid_chars = ['<', '>', ':', '"', '|', '?', '*', '\\', '/']
         for char in invalid_chars:
-            name = name.replace(char, "")
+            name = name.replace(char, "-")
             
-        # 3. Reemplazar secuencias problemáticas
-        name = name.replace(" + ", " mas ")  # Opcional: mantener el "+" como "mas"
-        
-        # 4. Eliminar espacios al inicio y final
+        # 2. Eliminar espacios al inicio y final
         name = name.strip()
         
-        # 5. Asegurar que no termine en punto o espacio
+        # 3. Asegurar que no termine en punto o espacio
         name = name.rstrip(". ")
         
-        # 6. Convertir a mayúsculas
+        # 4. Convertir a mayúsculas
         name = name.upper()
         
         return name
@@ -621,16 +606,46 @@ class ReferenceFolderCreationManager:
     def _authenticate_google_sheets(self) -> None:
         """Autentica con Google Sheets."""
         try:
+            # Verificar que el archivo existe
+            if not os.path.exists(self.google_credentials_path):
+                raise ValueError(f"El archivo de credenciales no existe en la ruta: {self.google_credentials_path}")
+                
+            # Verificar que el archivo es un JSON válido
+            try:
+                with open(self.google_credentials_path, 'r', encoding='utf-8') as f:
+                    credentials_json = json.load(f)
+                    
+                # Verificar campos requeridos
+                required_fields = ['type', 'project_id', 'private_key_id', 'private_key', 'client_email']
+                missing_fields = [field for field in required_fields if field not in credentials_json]
+                
+                if missing_fields:
+                    raise ValueError(f"El archivo de credenciales no contiene los campos requeridos: {', '.join(missing_fields)}")
+                    
+            except json.JSONDecodeError:
+                raise ValueError("El archivo de credenciales no es un JSON válido")
+                
             scopes = [
                 "https://www.googleapis.com/auth/spreadsheets",
                 "https://www.googleapis.com/auth/drive"
             ]
-            credentials = Credentials.from_service_account_file(
-                self.google_credentials_path, 
-                scopes=scopes
-            )
-            self.gc = gspread.authorize(credentials)
-            logger.info("Autenticación con Google Sheets exitosa")
+            
+            try:
+                credentials = Credentials.from_service_account_file(
+                    self.google_credentials_path, 
+                    scopes=scopes
+                )
+            except Exception as e:
+                raise ValueError(f"Error al cargar las credenciales: {str(e)}")
+                
+            try:
+                self.gc = gspread.authorize(credentials)
+                # Intentar una operación simple para verificar la autenticación
+                self.gc.open_by_key(self.google_sheet_key)
+                logger.info("Autenticación con Google Sheets exitosa")
+            except Exception as e:
+                raise ValueError(f"Error al autorizar con Google Sheets: {str(e)}")
+                
         except Exception as e:
             logger.error(f"Error en autenticación con Google Sheets: {e}")
             raise
@@ -715,8 +730,9 @@ class ReferenceFolderCreationManager:
 
     def _find_preferred_folder(self, reference: str) -> str:
         """
-        Busca la carpeta preferida en la base de datos.
-        Prioriza carpetas que contengan 'Instructivo' en su nombre.
+        [DEPRECATED] Busca la carpeta preferida en la base de datos.
+        Este método está marcado como deprecated ya que la búsqueda en BD ahora se realiza
+        a través del SearchThread. Se mantiene por compatibilidad con código legacy.
         
         Args:
             reference: Referencia a buscar (ej: 'MBT 11306')
@@ -727,7 +743,7 @@ class ReferenceFolderCreationManager:
         Raises:
             ValueError: Si no se encuentra ninguna carpeta
         """
-        logger.debug(f"Buscando carpeta preferida para: {reference}")
+        logger.debug(f"[DEPRECATED] Buscando carpeta preferida para: {reference}")
         
         # Normalizar referencia para búsqueda
         search_ref = normalize_text(reference)
@@ -1118,25 +1134,67 @@ class ReferenceFolderCreationManager:
         try:
             # 1) Buscar PDF
             pdf_candidates = []
-            for root, _, files in os.walk(source_folder):
-                for file in files:
+            
+            # Si la carpeta origen ya contiene 'instructivo', buscar solo en ella
+            if 'instructivo' in source_folder.lower():
+                logger.info("Carpeta origen contiene 'instructivo', buscando PDF directamente aquí")
+                # Buscar solo en esta carpeta, sin recursión
+                for file in os.listdir(source_folder):
                     if file.lower().endswith('.pdf'):
-                        pdf_candidates.append(os.path.join(root, file))
+                        full_path = os.path.join(source_folder, file)
+                        if os.path.isfile(full_path):
+                            pdf_candidates.append((full_path, 1))  # Prioridad alta por estar en carpeta instructivo
+                            logger.info(f"PDF encontrado en carpeta instructivo: {full_path}")
+                
+                if not pdf_candidates:
+                    logger.warning("✗ No se encontró PDF en la carpeta instructivo")
+                    result["errors"].append("No se encontró PDF en la carpeta instructivo")
+            else:
+                # Si no es una carpeta instructivo, buscar en la estructura completa
+                base_folder = self._find_base_folder(source_folder)
+                logger.info(f"Buscando PDFs desde carpeta base: {base_folder}")
+                
+                # Buscar en toda la estructura de carpetas
+                for root, _, files in os.walk(base_folder):
+                    for file in files:
+                        if file.lower().endswith('.pdf'):
+                            full_path = os.path.join(root, file)
+                            # Calcular prioridad del PDF
+                            priority = 0
+                            path_lower = root.lower()
+                            file_lower = file.lower()
+                            
+                            # Prioridad más alta: archivo y carpeta contienen "instructivo"
+                            if 'instructivo' in file_lower and 'instructivo' in path_lower:
+                                priority = 1
+                            # Segunda prioridad: carpeta contiene "instructivo"
+                            elif 'instructivo' in path_lower:
+                                priority = 2
+                            # Tercera prioridad: archivo contiene "instructivo"
+                            elif 'instructivo' in file_lower:
+                                priority = 3
+                            # Menor prioridad: contiene "mapa de empaque"
+                            elif 'mapa de empaque' in file_lower or 'mapa de empaque' in path_lower:
+                                priority = 5
+                            # Prioridad intermedia para otros PDFs
+                            else:
+                                priority = 4
+                                
+                            pdf_candidates.append((full_path, priority))
             
             if pdf_candidates:
-                # Priorizar PDFs con "instructivo" en el nombre
-                instructivo_pdfs = [p for p in pdf_candidates if 'instructivo' in p.lower()]
-                if instructivo_pdfs:
-                    selected_pdf = instructivo_pdfs[0]
-                    logger.info(f"✓ PDF de instructivo seleccionado: {selected_pdf}")
-                else:
-                    selected_pdf = pdf_candidates[0]
-                    logger.info(f"✓ PDF seleccionado: {selected_pdf}")
+                # Ordenar por prioridad (menor número = mayor prioridad)
+                pdf_candidates.sort(key=lambda x: x[1])
+                selected_pdf = pdf_candidates[0][0]
+                is_instructivo = pdf_candidates[0][1] <= 3  # Prioridades 1, 2 y 3 son instructivos
+                
+                logger.info(f"✓ PDF {'de instructivo ' if is_instructivo else ''}seleccionado: {selected_pdf}")
                 
                 # Guardar información del PDF para copiarlo después
                 result["pdf"] = {
                     "source": selected_pdf,
-                    "filename": os.path.basename(selected_pdf).upper()
+                    "filename": os.path.basename(selected_pdf).upper(),
+                    "is_instructivo": is_instructivo
                 }
                 logger.info("✓ PDF identificado exitosamente")
             else:
@@ -1158,49 +1216,6 @@ class ReferenceFolderCreationManager:
                     logger.info(f"Encontrados {len(rhino_files)} archivos Rhino alternativos")
                     result["waiting_for_rhino"] = True
                     result["rhino_alternatives"] = rhino_files
-                    
-                    # Construir mensaje con alternativas
-                    alternatives_message = (
-                        "Se han encontrado varios archivos Rhino. "
-                        "Por favor, selecciona el archivo correcto:\n\n"
-                    )
-                    
-                    for rhino_file in rhino_files:
-                        file_name = os.path.basename(rhino_file)
-                        alternatives_message += "---\n\n"
-                        alternatives_message += f"**{file_name}**\n"
-                        
-                        # Botón para abrir carpeta
-                        open_folder_btn = {
-                            "text": "Abrir carpeta",
-                            "path": os.path.dirname(rhino_file),
-                            "type": "folder"
-                        }
-                        alternatives_message += f"<file_button>{open_folder_btn}</file_button>\n"
-                        
-                        # Botón para abrir archivo
-                        open_file_btn = {
-                            "text": "Abrir archivo",
-                            "path": rhino_file,
-                            "type": "rhino"
-                        }
-                        alternatives_message += f"<file_button>{open_file_btn}</file_button>\n"
-                        
-                        # Botón para elegir archivo
-                        choose_file_btn = {
-                            "text": "Elegir este archivo",
-                            "path": rhino_file,
-                            "type": "choose_rhino"
-                        }
-                        alternatives_message += f"<file_button>{choose_file_btn}</file_button>\n\n"
-                    
-                    # Emitir mensaje al chat
-                    if self.controller and hasattr(self.controller, "chat_manager"):
-                        self.controller.chat_manager.llm_response.emit(
-                            "Sistema",
-                            alternatives_message,
-                            False
-                        )
             else:
                 # No se encontró ningún archivo Rhino
                 logger.warning("✗ No se encontraron archivos Rhino")
@@ -1216,52 +1231,44 @@ class ReferenceFolderCreationManager:
         finally:
             logger.info("=== FIN BÚSQUEDA DE ARCHIVOS ===")
 
-    def copy_selected_files(self, source_files: Dict, target_folder: Path) -> Dict:
+    def copy_selected_files(self, files_info: Dict, target_folder: Path) -> Dict:
         """
         Copia los archivos seleccionados a la carpeta destino.
         
         Args:
-            source_files: Diccionario con información de los archivos a copiar
+            files_info: Diccionario con información de los archivos a copiar
             target_folder: Carpeta destino
             
         Returns:
-            Dict con resultados de la copia
+            Dict con información de los archivos copiados
         """
-        logger.info("=== INICIO COPIA DE ARCHIVOS ===")
-        result = {
-            "pdf": None,
-            "rhino": None,
-            "errors": []
-        }
+        result = {}
         
         try:
             # Copiar PDF si existe
-            if source_files.get("pdf"):
-                pdf_source = source_files["pdf"]["source"]
-                pdf_filename = source_files["pdf"]["filename"]
-                pdf_target = target_folder / pdf_filename
+            if files_info.get("pdf"):
+                pdf_source = files_info["pdf"]["source"]
+                pdf_name = files_info["pdf"]["filename"]
+                pdf_target = target_folder / pdf_name
                 shutil.copy2(pdf_source, pdf_target)
-                result["pdf"] = pdf_filename
-                logger.info(f"✓ PDF copiado: {pdf_filename}")
+                result["pdf"] = pdf_name
+                logger.info(f"✓ PDF copiado: {pdf_name}")
             
             # Copiar Rhino si existe
-            if source_files.get("rhino"):
-                rhino_source = source_files["rhino"]["source"]
-                rhino_filename = source_files["rhino"]["filename"]
-                rhino_target = target_folder / rhino_filename
+            if files_info.get("rhino"):
+                rhino_source = files_info["rhino"]["source"]
+                rhino_name = files_info["rhino"]["filename"]
+                rhino_target = target_folder / rhino_name
                 shutil.copy2(rhino_source, rhino_target)
-                result["rhino"] = rhino_filename
-                logger.info(f"✓ Archivo Rhino copiado: {rhino_filename}")
+                result["rhino"] = rhino_name
+                logger.info(f"✓ Rhino copiado: {rhino_name}")
             
             return result
             
         except Exception as e:
             error_msg = f"Error copiando archivos: {str(e)}"
             logger.error(f"✗ {error_msg}")
-            result["errors"].append(error_msg)
-            return result
-        finally:
-            logger.info("=== FIN COPIA DE ARCHIVOS ===")
+            return {"errors": [error_msg]}
 
     def _determine_category_from_path(self, path: str) -> str:
         """

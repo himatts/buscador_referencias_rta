@@ -98,7 +98,7 @@ class SearchThread(QThread):
         Método principal que inicia la búsqueda según el tipo especificado.
         Ejecuta la búsqueda por referencia o por nombre de archivo según corresponda.
         """
-        if self.search_type == 'Referencia': # Si es referencia, ejecuta la búsqueda por referencia
+        if self.search_type in ['Referencia', 'FolderCreation']: # Si es referencia o creación de carpetas
             self.run_reference_search()
         elif self.search_type == 'Nombre de Archivo':
             self.run_name_search()
@@ -110,18 +110,18 @@ class SearchThread(QThread):
         
         Este método realiza una búsqueda en dos fases:
         1. Búsqueda en la base de datos local
-        2. Búsqueda en el sistema de archivos (NAS)
+        2. Búsqueda en el sistema de archivos (NAS) - Solo si el tipo de búsqueda no es FolderCreation
         
         Emite señales de progreso durante la búsqueda y nuevos resultados encontrados.
         """
         print("Iniciando búsqueda en la base de datos (Referencia)...") 
         total_db_references = len(self.text_lines)
-        for idx, text_line in enumerate(self.text_lines): # Recorre cada referencia en la lista de referencias
+        for idx, text_line in enumerate(self.text_lines):
             if self.isInterruptionRequested():
                 break
             
             # Extraer la referencia del texto de búsqueda
-            reference = extract_reference(text_line) # Extrae la referencia del texto de búsqueda
+            reference = extract_reference(text_line)
             search_text = reference if reference else text_line
             
             print(f"Buscando en la base de datos para la referencia: {search_text}")
@@ -154,16 +154,22 @@ class SearchThread(QThread):
             
             self.db_progress.emit((idx + 1) / total_db_references * 100)
         
-        print("Finalizada la búsqueda en la búsqueda de referencias.")
+        print("Finalizada la búsqueda en la base de datos.")
 
-        print("Iniciando búsqueda en la NAS para referencias...")
-        self.processed_directories = 0
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor: # Inicia el hilo de búsqueda en la NAS
-            futures = [executor.submit(self.processPath, path) for path in self.paths] # Envía cada ruta a la función processPath
-            for future in as_completed(futures):
-                if self.isInterruptionRequested():
-                    break
-                future.result() # Espera a que se complete la tarea
+        # Solo realizar búsqueda en NAS si no es FolderCreation
+        if self.search_type != 'FolderCreation':
+            print("Iniciando búsqueda en la NAS para referencias...")
+            self.processed_directories = 0
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = [executor.submit(self.processPath, path) for path in self.paths]
+                for future in as_completed(futures):
+                    if self.isInterruptionRequested():
+                        break
+                    future.result()
+        else:
+            # Para FolderCreation, marcar la búsqueda en NAS como completada
+            self.nas_progress.emit(100)
+            print("Omitiendo búsqueda en NAS para modo de creación de carpetas.")
 
     def run_name_search(self):
         """
@@ -382,8 +388,8 @@ class SearchThread(QThread):
         return False
 
     def pre_search_in_db_path(self, db_path, search_reference, idx):
-        # Solo se ejecuta si search_type es 'Referencia'
-        if self.search_type != 'Referencia':
+        # Solo se ejecuta si search_type es 'Referencia' o 'FolderCreation'
+        if self.search_type not in ['Referencia', 'FolderCreation']:
             return
         for root, dirs, files in os.walk(db_path):
             if "Imágenes" in self.file_types:
@@ -412,7 +418,6 @@ class SearchThread(QThread):
                             self.results.setdefault(idx, []).append((full_path, "Excel", search_reference))
                             self.found_paths.add(full_path)
                             self.new_result.emit(idx, full_path, "Excel", search_reference)
-
 
     def search_in_folder(self, folder_path, search_reference, idx):
         for root, dirs, files in os.walk(folder_path):

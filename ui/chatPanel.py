@@ -84,28 +84,31 @@ class FileButton(QPushButton):
                     background-color: #545b62;
                 }
             """)
-        elif button_type == "choose_rhino":
-            self.setStyleSheet(base_style + """
-                QPushButton {
-                    background-color: #007bff;
+        elif button_type in ["choose_rhino", "skip_rhino"]:
+            color = "#007bff" if button_type == "choose_rhino" else "#dc3545"
+            hover_color = "#0056b3" if button_type == "choose_rhino" else "#c82333"
+            pressed_color = "#004085" if button_type == "choose_rhino" else "#bd2130"
+            self.setStyleSheet(base_style + f"""
+                QPushButton {{
+                    background-color: {color};
                     color: white;
                     min-width: 60px;
                     font-size: 12px;
-                }
-                QPushButton:hover {
-                    background-color: #0056b3;
-                }
-                QPushButton:pressed {
-                    background-color: #004085;
-                }
+                }}
+                QPushButton:hover {{
+                    background-color: {hover_color};
+                }}
+                QPushButton:pressed {{
+                    background-color: {pressed_color};
+                }}
             """)
     
     def _on_click(self):
         """Maneja el clic del botón abriendo el archivo o carpeta."""
         try:
-            if self.button_type == "choose_rhino":
+            if self.button_type in ["choose_rhino", "skip_rhino"]:
                 # Emitir señal para manejar la selección
-                logger.info(f"FileButton: Emitiendo señal de selección para: {self.file_path}")
+                logger.info(f"FileButton: Emitiendo señal de selección para: {self.button_type}")
                 self.file_selected.emit(self.file_path, self.button_type)
             else:
                 # Comportamiento normal de abrir archivo/carpeta
@@ -300,45 +303,12 @@ class MessageBubble(QFrame):
                             """)
                             layout.addWidget(label)
                             
-        # Añadir botón "No elegir ninguno" si hay botones de selección de Rhino
-        if any("choose_rhino" in str(part) for part in parts[1:]):
-            skip_button = QPushButton("No elegir ninguno")
-            skip_button.setStyleSheet("""
-                QPushButton {
-                    background-color: #6c757d;
-                    color: white;
-                    min-width: 60px;
-                    font-size: 12px;
-                    padding: 4px 8px;
-                    border-radius: 4px;
-                    border: none;
-                    margin: 2px;
-                }
-                QPushButton:hover {
-                    background-color: #5a6268;
-                }
-                QPushButton:pressed {
-                    background-color: #545b62;
-                }
-            """)
-            # Conectar directamente sin lambda
-            skip_button.clicked.connect(self._on_skip_button_clicked)
-            self.buttons.append(skip_button)  # Mantener referencia al botón
-            logger.debug("Botón 'No elegir ninguno' creado y conectado")
-            
-            skip_container = QWidget()
-            skip_layout = QHBoxLayout(skip_container)
-            skip_layout.setContentsMargins(0, 10, 0, 0)
-            skip_layout.addStretch()
-            skip_layout.addWidget(skip_button)
-            skip_layout.addStretch()
-            
-            layout.addWidget(skip_container)
-
+        # El botón "No elegir ninguno" ya no es necesario porque se maneja a través del botón "Omitir archivo Rhino"
+        # que se envía desde el ChatManager
+        
     def _on_skip_button_clicked(self):
-        """Maneja el clic en el botón de 'No elegir ninguno'."""
-        logger.info("MessageBubble: Botón 'No elegir ninguno' presionado")
-        self.file_selected.emit("", "skip_rhino")
+        """[DEPRECATED] Este método ya no se usa."""
+        pass
 
 class ChatPanel(QWidget):
     """Panel de chat con interacción mediante botones."""
