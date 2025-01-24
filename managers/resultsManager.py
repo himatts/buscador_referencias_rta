@@ -109,14 +109,21 @@ class ResultsManager:
         # Verificar duplicados
         for i in range(results.topLevelItemCount()):
             existing_item = results.topLevelItem(i)
-            if existing_item.text(4) == path:
+            if existing_item.text(6) == path:
                 return
                 
         folder_name = os.path.split(path)[1]
         
+        # Extraer REF y ### del nombre del archivo
+        match = re.match(r"([A-Z]+)\s*(\d+)", folder_name)
+        component1 = match.group(1) if match else ''
+        component2 = match.group(2) if match else ''
+        
         item = QTreeWidgetItem([
             '',  # Seleccionar
             str(idx + 1),  # ID
+            component1,  # REF
+            component2,  # ###
             file_type,  # TIPO
             folder_name,  # NOMBRE DE ARCHIVO
             path  # RUTA
@@ -194,23 +201,20 @@ class ResultsManager:
     def recolor_results(self):
         """Recolorea las filas de la tabla de resultados para mejorar la legibilidad."""
         main_window = self.main_controller.main_window
-        last_ref = None
+        last_id = None
         color = QColor("lightgray")
         
         for i in range(main_window.results.topLevelItemCount()):
             item = main_window.results.topLevelItem(i)
-            if main_window.search_type == 'Referencia':
-                current_ref = item.text(3)  # Columna '###'
-            else:
-                current_ref = item.text(2)  # Columna 'TIPO'
+            current_id = item.text(1)  # Columna 'ID'
                 
-            if last_ref != current_ref:
+            if last_id != current_id:
                 color = QColor("white") if color == QColor("lightgray") else QColor("lightgray")
                 
             for j in range(item.columnCount()):
                 item.setBackground(j, QBrush(color))
                 
-            last_ref = current_ref
+            last_id = current_id
             
     def update_results_headers(self):
         """Actualiza los encabezados de la tabla de resultados según el tipo de búsqueda."""
@@ -220,26 +224,17 @@ class ResultsManager:
         results.clear()
         results.setHeaderHidden(False)
         
-        if main_window.search_type == 'Referencia':
-            results.setColumnCount(7)
-            results.setHeaderLabels(['', 'ID', 'REF', '###', 'TIPO', 'NOMBRE DE ARCHIVO', 'RUTA'])
-            results.setColumnWidth(0, 40)
-            results.setColumnWidth(1, 15)
-            results.setColumnWidth(2, 50)
-            results.setColumnWidth(3, 50)
-            results.setColumnWidth(4, 90)
-            results.setColumnWidth(5, 250)
-            results.setColumnWidth(6, 200)
-            results.header().setSectionResizeMode(6, QHeaderView.Stretch)
-        else:  # Nombre de Archivo o Imagen
-            results.setColumnCount(5)
-            results.setHeaderLabels(['', 'ID', 'TIPO', 'NOMBRE DE ARCHIVO', 'RUTA'])
-            results.setColumnWidth(0, 40)
-            results.setColumnWidth(1, 15)
-            results.setColumnWidth(2, 90)
-            results.setColumnWidth(3, 250)
-            results.setColumnWidth(4, 200)
-            results.header().setSectionResizeMode(4, QHeaderView.Stretch)
+        # Configuración unificada para todos los tipos de búsqueda
+        results.setColumnCount(7)
+        results.setHeaderLabels(['', 'ID', 'REF', '###', 'TIPO', 'NOMBRE DE ARCHIVO', 'RUTA'])
+        results.setColumnWidth(0, 40)
+        results.setColumnWidth(1, 15)
+        results.setColumnWidth(2, 50)
+        results.setColumnWidth(3, 50)
+        results.setColumnWidth(4, 90)
+        results.setColumnWidth(5, 250)
+        results.setColumnWidth(6, 200)
+        results.header().setSectionResizeMode(6, QHeaderView.Stretch)
             
     def process_final_results(self, results_dict):
         """

@@ -486,28 +486,105 @@ class LLMManager:
         Returns:
             str: Nombre formateado
         """
-        prompt = f"""Formatea este nombre de referencia siguiendo EXACTAMENTE estas reglas:
+        prompt = f"""Formatea este nombre de referencia siguiendo EXACTAMENTE estas reglas y pasos de razonamiento:
 
-1. Formato final OBLIGATORIO: "CÓDIGO NÚMERO - NOMBRE (COLORES)"
-   Ejemplo: "CDB 9493 - CLOSET BARILOCHE ECO 150 (DUNA-BLANCO + BLANCO MQZ)"
+1. ANÁLISIS INICIAL:
+   a) Identifica el nombre base del mueble sin colores ni especificaciones
+   b) Identifica TODOS los colores/materiales mencionados
+   c) Identifica si hay redundancias en los colores (mismos colores mencionados múltiples veces)
+   d) Identifica si el nombre incluye "BI-COLOR" o términos similares que indiquen combinación de colores
+   e) Identifica si hay colores simples y compuestos en la misma referencia
+   f) IMPORTANTE: Identifica el orden original en que aparecen los colores
+   g) Identifica si aparece "MARQUEZ", "MARQUÉZ" o "MQZ" en la descripción
 
-2. Reglas de formateo:
-   - Mantener el nombre del mueble exactamente como está
-   - Poner TODOS los colores/materiales entre paréntesis al final
-   - Usar "+" con espacios alrededor para separar colores: "COLOR1 + COLOR2"
-   - Mantener guiones en nombres compuestos: "DUNA-BLANCO" o cambiar por "-" cuando el nombre original tiene una barra '/' para dividir los colores compuestos.
-   - Cambiar "MARQUEZ" o "MARQUÉZ" por "MQZ"
+2. LIMPIEZA DE INFORMACIÓN:
    - Eliminar dimensiones como "71,5X210X34 CM"
    - Eliminar "(1C)", "(2C)", etc.
    - Eliminar "_CAJA"
    - Eliminar "HD", "IMAGEN", "DIMENSIONES"
-   - Reemplazar "mas" por "+"
+   - Eliminar redundancias en nombres de colores
+   - Si dice "BI-COLOR" y luego repite los colores, mantener solo una instancia
 
-3. IMPORTANTE:
-   - SIEMPRE usar paréntesis para los colores/materiales
-   - NUNCA perder información de colores/materiales
-   - SIEMPRE mantener el espacio entre código y número
-   - SIEMPRE cambiar el símbolo / o \  por un guión '-'
+3. FORMATEO DE COLORES:
+   a) REGLAS ESPECIALES PARA "MQZ":
+      - "MQZ" es un calificativo que SOLO se aplica al color "BLANCO"
+      - Siempre escribirlo como "BLANCO MQZ", nunca separado por guión
+      - NUNCA usar "MQZ" con otros colores que no sean "BLANCO"
+      - IMPORTANTE: En colores compuestos, "MQZ" SIEMPRE va inmediatamente después de "BLANCO":
+        Correcto: "(DUNA + BLANCO MQZ)"
+        Correcto: "(BLANCO MQZ-DUNA)"
+        Incorrecto: "(BLANCO-DUNA MQZ)"
+      - Si aparece "MARQUEZ" o "MARQUÉZ", reemplazar por "MQZ" siguiendo estas mismas reglas
+      - El orden de los colores sigue siendo importante, pero "MQZ" SIEMPRE va junto a "BLANCO"
+   
+   b) ORDEN DE LOS COLORES:
+      - SIEMPRE mantener el orden original de los colores como aparecen en la descripción
+      - Para colores compuestos, el orden es crítico y define una variante diferente
+        Ejemplo: "DUNA-BLANCO" es diferente de "BLANCO-DUNA"
+      - Si el mismo color compuesto aparece múltiples veces, usar la primera aparición para determinar el orden
+   
+   c) COLORES SIMPLES vs COMPUESTOS:
+      - Un color simple es un solo color: "DUNA", "BLANCO", "WENGUE"
+      - Un color compuesto usa guión: "DUNA-BLANCO", "BLANCO-WENGUE"
+      - NUNCA combinar un color simple con su versión compuesta en el mismo paréntesis
+        Ejemplo incorrecto: "(DUNA-BLANCO + BLANCO)"
+   
+   d) REGLAS DE SEPARACIÓN:
+      - Usar "+" con espacios alrededor para separar colores diferentes: "COLOR1 + COLOR2"
+      - Usar "-" sin espacios para unir colores compuestos: "COLOR1-COLOR2"
+      - Cambiar "/" o "\" por "-" en nombres compuestos, manteniendo el orden original
+   
+   e) CASOS ESPECIALES:
+      - Si un color simple aparece junto con un color compuesto que lo incluye, mantener ambos:
+        Ejemplo: "(DUNA + DUNA-BLANCO)" es correcto porque DUNA es un color y DUNA-BLANCO es otro
+      - Si hay dos colores compuestos, mantenerlos separados:
+        Ejemplo: "(DUNA-BLANCO + BLANCO-WENGUE)" es correcto
+      - Para "BLANCO MQZ" en colores compuestos, mantener "MQZ" al final:
+        Ejemplo: "(DUNA-BLANCO MQZ + WENGUE)"
+
+4. FORMATO FINAL OBLIGATORIO:
+   "CÓDIGO NÚMERO - NOMBRE (COLORES)"
+   
+   EJEMPLOS CORRECTOS:
+   - "MDB 7236 - MUEBLE BOTIQUIN BATH BI-COLOR (DUNA + BLANCO MQZ)"  # Cuando DUNA va primero
+   - "MBD 7237 - MUEBLE BOTIQUIN BATH BI-COLOR (BLANCO MQZ-DUNA)"    # Cuando BLANCO va primero
+   - "CLB 9493 - CLOSET BARILOCHE (DUNA + DUNA-BLANCO)"
+   - "CLB 9494 - CLOSET BARILOCHE (DUNA + BLANCO-WENGUE)"
+   - "CDB 9495 - CLOSET BARILOCHE (BLANCO MQZ + DUNA)"  # MQZ solo con BLANCO
+   
+   EJEMPLOS INCORRECTOS:
+   - "CDB 9495 - CLOSET BARILOCHE (DUNA MQZ + BLANCO)"     # MQZ no debe usarse con DUNA
+   - "CDB 9496 - CLOSET BARILOCHE (DUNA-BLANCO MQZ)"       # MQZ no debe ir al final del color compuesto
+   - "MBD 7237 - MUEBLE BOTIQUIN BATH (BLANCO-DUNA MQZ)"   # MQZ debe ir inmediatamente después de BLANCO
+
+5. VALIDACIÓN DE REDUNDANCIAS:
+   - ¿El nombre contiene los mismos colores múltiples veces?
+   - ¿Los colores en el nombre base son los mismos que en el paréntesis?
+   - Si es así, mantener los colores SOLO en el paréntesis final
+   - Para muebles BI-COLOR, el nombre base NO debe incluir los colores
+   - Verificar que los colores simples y compuestos estén correctamente separados
+   - ¿Se mantiene el orden original de los colores?
+   - ¿"MQZ" solo se usa con "BLANCO" y está correctamente formateado?
+
+6. EJEMPLOS DE MANEJO DE REDUNDANCIAS Y COLORES:
+   Entrada: "MUEBLE BOTIQUIN BATH BI-COLOR DUNA/BLANCO (1C) DUNA/BLANCO MARQUEZ 72.6X41.2X35.2 CM"
+   Correcto: "MDB 7236 - MUEBLE BOTIQUIN BATH BI-COLOR (DUNA + BLANCO MQZ)"
+   
+   Entrada: "MUEBLE BOTIQUIN BATH BI-COLOR BLANCO/DUNA (1C) DUNA/BLANCO MARQUÉZ 72.6X41.2X35.2 CM"
+   Correcto: "MBD 7237 - MUEBLE BOTIQUIN BATH BI-COLOR (BLANCO MQZ-DUNA)"
+   
+   Entrada: "CLOSET BARILOCHE DUNA BLANCO MARQUEZ"
+   Correcto: "CLB 9493 - CLOSET BARILOCHE (DUNA + BLANCO MQZ)"
+
+7. VALIDACIÓN FINAL:
+   Antes de devolver el nombre, verifica:
+   - ¿Se eliminaron todas las redundancias de colores?
+   - ¿Los colores aparecen solo una vez y en el lugar correcto?
+   - ¿Los colores simples y compuestos están correctamente separados?
+   - ¿El formato cumple con el patrón "CÓDIGO NÚMERO - NOMBRE (COLORES)"?
+   - ¿Se mantiene toda la información importante sin repeticiones?
+   - ¿Se respeta el orden original de los colores?
+   - ¿"MQZ" solo se usa con "BLANCO" y está correctamente formateado como "BLANCO MQZ"?
 
 Información a formatear:
 Código: {code}

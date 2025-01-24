@@ -10,12 +10,14 @@ Versión: 1.0
 
 from PyQt5.QtCore import QObject, pyqtSignal
 from utils.llm_manager import LLMManager
+from utils.helpers import extract_reference
 from typing import Dict, List, Optional
 import os
 import logging
 import json
 from datetime import datetime
 import shutil
+from core.folderCreationThread import FolderCreationThread
 
 # Configurar logging
 logging.basicConfig(
@@ -146,11 +148,34 @@ class ChatManager(QObject):
             bool: True si la transición es válida
         """
         valid_transitions = {
-            self.ESTADO_INICIAL: [self.ESTADO_VERIFICAR_REFERENCIAS, self.ESTADO_ERROR],
-            self.ESTADO_VERIFICAR_REFERENCIAS: [self.ESTADO_BUSCAR_SHEETS, self.ESTADO_ERROR, self.ESTADO_FINALIZADO],
-            self.ESTADO_BUSCAR_SHEETS: [self.ESTADO_CREAR_CARPETAS, self.ESTADO_ERROR, self.ESTADO_FINALIZADO],
-            self.ESTADO_CREAR_CARPETAS: [self.ESTADO_SELECCIONAR_RHINO, self.ESTADO_FINALIZADO, self.ESTADO_ERROR],
-            self.ESTADO_SELECCIONAR_RHINO: [self.ESTADO_CREAR_CARPETAS, self.ESTADO_FINALIZADO, self.ESTADO_ERROR],
+            self.ESTADO_INICIAL: [
+                self.ESTADO_VERIFICAR_REFERENCIAS,
+                self.ESTADO_SELECCIONAR_RHINO,
+                self.ESTADO_ERROR
+            ],
+            self.ESTADO_VERIFICAR_REFERENCIAS: [
+                self.ESTADO_BUSCAR_SHEETS,
+                self.ESTADO_SELECCIONAR_RHINO,  # Permitir transición directa a selección
+                self.ESTADO_ERROR,
+                self.ESTADO_FINALIZADO
+            ],
+            self.ESTADO_BUSCAR_SHEETS: [
+                self.ESTADO_CREAR_CARPETAS,
+                self.ESTADO_SELECCIONAR_RHINO,  # Permitir transición directa a selección
+                self.ESTADO_ERROR,
+                self.ESTADO_FINALIZADO
+            ],
+            self.ESTADO_CREAR_CARPETAS: [
+                self.ESTADO_SELECCIONAR_RHINO,
+                self.ESTADO_FINALIZADO,
+                self.ESTADO_ERROR
+            ],
+            self.ESTADO_SELECCIONAR_RHINO: [
+                self.ESTADO_CREAR_CARPETAS,
+                self.ESTADO_FINALIZADO,
+                self.ESTADO_ERROR,
+                self.ESTADO_SELECCIONAR_RHINO  # Permitir permanecer en el mismo estado
+            ],
             self.ESTADO_ERROR: [
                 self.ESTADO_VERIFICAR_REFERENCIAS,
                 self.ESTADO_BUSCAR_SHEETS,
@@ -183,7 +208,7 @@ class ChatManager(QObject):
         
     def start_folder_creation_process(self, references: List[str], db_results: Optional[Dict[str, List[str]]] = None):
         """
-        Inicia el proceso de creación de carpetas.
+        Inicia el proceso de creación de carpetas en un hilo separado.
         
         Args:
             references: Lista de referencias a procesar
@@ -211,37 +236,181 @@ class ChatManager(QObject):
             )
             self.llm_response.emit("Sistema", welcome_message, False)
             
-            # Si ya tenemos resultados de la BD, guardarlos en el contexto
-            if db_results:
-                # Clasificar referencias encontradas y no encontradas
-                found_refs = []
-                not_found_refs = []
-                
-                for ref in references:
-                    paths = db_results.get(ref, [])
-                    if paths:
-                        found_refs.append(ref)
+            # Clasificar referencias encontradas y no encontradas
+            found_refs = []
+            not_found_refs = []
+            
+            for ref in references:
+                paths = db_results.get(ref, [])
+                if paths:
+                    found_refs.append(ref)
+                else:
+                    not_found_refs.append(ref)
+            
+            # Guardar en el contexto
+            self.step_context = {
+                'db_results': db_results,
+                'found_refs': found_refs,
+                'not_found_refs': not_found_refs,
+                'total_refs': len(references)
+            }
+            
+            # Generar mensaje informativo para el chat
+            message = f"He encontrado {len(found_refs)} referencias en la base de datos"
+            if not_found_refs:
+                message += f" y {len(not_found_refs)} no fueron encontradas"
+            message += ".\n\n"
+            
+            if found_refs:
+                message += "Referencias encontradas:\n"
+                for ref in found_refs:
+                    formatted_ref = extract_reference(ref)
+                    if formatted_ref:
+                        message += f"• {formatted_ref}\n"
                     else:
-                        not_found_refs.append(ref)
-                
-                self.step_context = {
-                    'db_results': db_results,
-                    'found_refs': found_refs,
-                    'not_found_refs': not_found_refs,
-                    'total_refs': len(references)
+                        message += f"• {ref}\n"
+                message += "\n"
+            
+            if not_found_refs:
+                message += "Referencias no encontradas:\n"
+                for ref in not_found_refs:
+                    formatted_ref = extract_reference(ref)
+                    if formatted_ref:
+                        message += f"• {formatted_ref}\n"
+                    else:
+                        message += f"• {ref}\n"
+                message += "\n"
+            
+            message += "¿Deseas continuar con la búsqueda en Google Sheets y formateo de referencias?"
+            
+            self.llm_response.emit("Sistema", message, False)
+            
+            # Mostrar botones de acción
+            actions = [
+                {
+                    'text': 'Sí',
+                    'callback': lambda: self._handle_verification_response(True)
+                },
+                {
+                    'text': 'No',
+                    'callback': lambda: self._handle_verification_response(False)
                 }
+            ]
+            self.controller.main_window.chat_panel.show_action_buttons(actions)
             
-            # Siempre empezar por verificar referencias
+            # Transicionar al estado de verificación
             self._transition_to_step(self.ESTADO_VERIFICAR_REFERENCIAS)
-            
-            # Iniciar el proceso
-            self.process_next_step()
             
         except Exception as e:
             error_msg = self._handle_error(e)
             self.llm_response.emit("Sistema", error_msg, True)
-            self.error_occurred.emit("inicio", str(e))
+            
+    def _handle_verification_response(self, accepted: bool):
+        """Maneja la respuesta del usuario a la verificación de referencias."""
+        try:
+            self.controller.main_window.chat_panel.clear_action_buttons()
+            
+            if accepted:
+                # Crear y configurar el hilo de creación de carpetas
+                self.folder_creation_thread = FolderCreationThread(
+                    self.controller.folder_creation_manager,
+                    self.current_references,
+                    self.step_context.get('db_results', {})
+                )
+                
+                # Conectar señales
+                self.folder_creation_thread.progress.connect(self._update_progress)
+                self.folder_creation_thread.error.connect(self._handle_thread_error)
+                self.folder_creation_thread.finished.connect(self._process_folder_results)
+                
+                # Transicionar al siguiente estado
+                self._transition_to_step(self.ESTADO_BUSCAR_SHEETS)
+                
+                # Iniciar el proceso
+                self.folder_creation_thread.start()
+            else:
+                self.llm_response.emit("Sistema", "Proceso cancelado.", False)
+                self._transition_to_step(self.ESTADO_FINALIZADO)
+                
+        except Exception as e:
+            error_msg = self._handle_error(e)
+            self.llm_response.emit("Sistema", error_msg, True)
+            self._transition_to_step(self.ESTADO_ERROR)
+
+    def _process_folder_results(self, results: Dict):
+        """Procesa los resultados finales de la creación de carpetas"""
+        try:
+            # Actualizar nombres en la tabla si hay referencias formateadas
+            if results.get("formatted_refs"):
+                entry = self.controller.main_window.entry
+                for ref_data in results["formatted_refs"]:
+                    # Buscar la referencia original en la tabla y actualizarla
+                    for row in range(entry.rowCount()):
+                        item = entry.item(row, 0)
+                        if item and item.text().strip() == ref_data['original']:
+                            # Extraer solo el nombre formateado
+                            nombre_formateado = ref_data['nombre_formateado']
+                            if isinstance(nombre_formateado, tuple):
+                                nombre_formateado = nombre_formateado[0]
+                            item.setText(nombre_formateado)
+                            break
+            
+            # Si hay archivos pendientes de selección, no mostrar mensaje de completado
+            if results.get("pending_files"):
+                # Guardar información en el contexto
+                self.step_context["pending_files"] = results["pending_files"]
+                
+                # Tomar la primera referencia pendiente
+                ref_key = next(iter(results["pending_files"]))
+                self.pending_rhino_selection = {
+                    "original": ref_key,
+                    "pending_files": results["pending_files"],
+                    **results["pending_files"][ref_key]
+                }
+                
+                # Transicionar al estado de selección
+                self._transition_to_step(self.ESTADO_SELECCIONAR_RHINO)
+                
+                # Iniciar el proceso secuencial para la primera referencia
+                self.process_single_reference()
+                return
+                
+            # Solo si no hay pendientes, mostrar el resumen final
+            if results.get("processed"):
+                self._show_final_summary(results)
+                self._transition_to_step(self.ESTADO_FINALIZADO)
+            else:
+                self.llm_response.emit(
+                    "Sistema",
+                    "No se pudo procesar ninguna referencia correctamente.",
+                    True
+                )
+                self._transition_to_step(self.ESTADO_ERROR)
+                
+        except Exception as e:
+            logger.error(f"Error procesando resultados: {str(e)}")
+            self.llm_response.emit(
+                "Sistema",
+                f"Error procesando resultados: {str(e)}",
+                True
+            )
+            self._transition_to_step(self.ESTADO_ERROR)
+
+    def stop_folder_creation(self):
+        """Detiene el proceso de creación de carpetas si está en ejecución"""
+        if hasattr(self, 'folder_creation_thread') and self.folder_creation_thread.isRunning():
+            self.folder_creation_thread.stop()
+            self.folder_creation_thread.wait()
+
+    def _update_progress(self, message: str):
+        """Actualiza el progreso en la interfaz"""
+        self.llm_response.emit("Sistema", message, False)
         
+    def _handle_thread_error(self, error_message: str):
+        """Maneja errores del hilo de creación de carpetas"""
+        self.llm_response.emit("Sistema", f"Error en el proceso: {error_message}", True)
+        self._transition_to_step(self.ESTADO_ERROR)
+
     def _update_tokens_display(self):
         """Actualiza la visualización de tokens en la interfaz."""
         input_tokens, output_tokens = self.llm_manager.get_token_counts()
@@ -373,12 +542,31 @@ class ChatManager(QObject):
                 logger.warning("No hay referencias pendientes para procesar")
                 return
 
-            # Obtener la referencia actual
+            # Obtener la referencia actual y sus datos
             current_ref = self.pending_rhino_selection["original"]
             ref_data = self.pending_rhino_selection["pending_files"][current_ref]
+            
+            # Obtener el nombre formateado del contexto
+            formatted_name = None
+            if "formatted_refs" in self.step_context:
+                for ref in self.step_context["formatted_refs"]:
+                    if ref["original"] == current_ref:
+                        # Asegurarnos de obtener el nombre formateado completo
+                        if isinstance(ref["nombre_formateado"], tuple):
+                            formatted_name = ref["nombre_formateado"][0]
+                        else:
+                            formatted_name = ref["nombre_formateado"]
+                        break
+
+            # Si no encontramos el nombre formateado en el contexto, intentar obtenerlo de ref_data
+            if not formatted_name and "nombre_formateado" in ref_data:
+                if isinstance(ref_data["nombre_formateado"], tuple):
+                    formatted_name = ref_data["nombre_formateado"][0]
+                else:
+                    formatted_name = ref_data["nombre_formateado"]
 
             # 1. Mostrar mensaje solicitando la selección del archivo Rhino
-            message = f"\nPor favor, selecciona el archivo Rhino para la referencia: {current_ref}"
+            message = f"\nPor favor, selecciona el archivo Rhino para la referencia:\n{formatted_name if formatted_name else current_ref}"
             
             # Obtener las alternativas de archivos Rhino
             rhino_alternatives = []
@@ -387,11 +575,11 @@ class ChatManager(QObject):
             
             if rhino_alternatives:
                 # 2. Si hay múltiples archivos, mostrar la lista
-                message += "\nSe han encontrado los siguientes archivos Rhino:\n"
+                message += "\n\nSe han encontrado los siguientes archivos Rhino:\n\n"
                 
                 for i, path in enumerate(rhino_alternatives):
                     if i > 0:
-                        message += "\n---\n"  # Divisor entre archivos
+                        message += "\n\n---\n\n"  # Divisor entre archivos con más espacio
                         
                     file_name = os.path.basename(path)
                     # Botón para abrir carpeta
@@ -413,12 +601,12 @@ class ChatManager(QObject):
                         'type': 'choose_rhino'
                     }
                     
-                    message += f"\n<b>{file_name}</b>\n"
+                    message += f"<b>{file_name}</b>\n\n"  # Doble salto después del nombre
                     message += f"<file_button>{folder_button}</file_button> "
                     message += f"<file_button>{file_button}</file_button> "
                     message += f"<file_button>{choose_button}</file_button>"
                 
-                # Botón para omitir al final, después de un divisor
+                # Botón para omitir al final, después de un divisor con más espacio
                 message += "\n\n---\n\n"
                 skip_button = {
                     'text': "❌ Omitir archivo Rhino",
@@ -539,13 +727,21 @@ class ChatManager(QObject):
                 if found_refs:
                     message += "Referencias encontradas:\n"
                     for ref in found_refs:
-                        message += f"- {ref}\n"
+                        formatted_ref = extract_reference(ref)
+                        if formatted_ref:
+                            message += f"• {formatted_ref}\n"
+                        else:
+                            message += f"• {ref}\n"
                     message += "\n"
                 
                 if not_found_refs:
                     message += "Referencias no encontradas:\n"
                     for ref in not_found_refs:
-                        message += f"- {ref}\n"
+                        formatted_ref = extract_reference(ref)
+                        if formatted_ref:
+                            message += f"• {formatted_ref}\n"
+                        else:
+                            message += f"• {ref}\n"
                     message += "\n¿Deseas reformatear y crear las carpetas para los datos encontrados?"
                 else:
                     message += "¿Deseas reformatear y crear las carpetas para los datos encontrados?"
@@ -723,16 +919,6 @@ class ChatManager(QObject):
             self.llm_response.emit("Sistema", error_msg, True)
             self.error_occurred.emit(self.current_step, str(e))
             self._transition_to_step(self.ESTADO_ERROR)
-
-    def _handle_verification_response(self, accepted: bool):
-        """Maneja la respuesta del usuario a la verificación de referencias."""
-        self.controller.main_window.chat_panel.clear_action_buttons()
-        if accepted:
-            self._transition_to_step(self.ESTADO_BUSCAR_SHEETS)
-            self.process_next_step()
-        else:
-            self.llm_response.emit("Sistema", "Proceso cancelado.", False)
-            self._transition_to_step(self.ESTADO_FINALIZADO)
 
     def _handle_sheets_response(self, accepted: bool):
         """Maneja la respuesta del usuario a la confirmación de nombres formateados."""

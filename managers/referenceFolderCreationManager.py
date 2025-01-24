@@ -5,12 +5,12 @@ import logging
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 
 import gspread
 from google.oauth2.service_account import Credentials
 from utils.database import get_db_connection
-from utils.helpers import normalize_text
+from utils.helpers import normalize_text, extract_reference
 from utils.llm_manager import LLMManager
 
 # Configurar logging
@@ -220,6 +220,8 @@ class ReferenceFolderCreationManager:
             Dict con resultados del proceso y estado de procesamiento
         """
         logger.info("=== INICIO PROCESO DE CREACIÓN DE CARPETAS ===")
+        logger.info(f"Referencias a procesar: {[ref.get('original') for ref in formatted_refs]}")
+        logger.info(f"Resultados de BD disponibles: {list(db_results.keys())}")
         
         # Obtener el estado actual del procesamiento
         current_state = getattr(self, '_processing_state', {})
@@ -230,7 +232,8 @@ class ReferenceFolderCreationManager:
                 "errors": [],
                 "pending_files": {},
                 "current_index": 0,
-                "refs_to_process": formatted_refs
+                "refs_to_process": formatted_refs,
+                "db_results": db_results  # Guardar los resultados de la BD en el estado
             }
             self._processing_state = current_state
         
@@ -257,17 +260,17 @@ class ReferenceFolderCreationManager:
                 logger.warning(f"✗ Referencia con error previo: {ref_info['error']}")
                 current_state["errors"].append(f"Error previo en {original_ref}: {ref_info['error']}")
                 current_state["current_index"] += 1
-                return self.create_folders_and_copy_files(formatted_refs, db_results)
+                return self.create_folders_and_copy_files(formatted_refs, current_state["db_results"])
             
             final_name = ref_info['nombre_formateado']
             category = ref_info.get('category', '')
             
-            # Verificar rutas en base de datos
-            if original_ref not in db_results or not db_results[original_ref]:
+            # Verificar rutas en base de datos usando el estado guardado
+            if original_ref not in current_state["db_results"] or not current_state["db_results"][original_ref]:
                 logger.warning(f"✗ No hay rutas en base de datos para {original_ref}")
                 current_state["errors"].append(f"No hay rutas para {original_ref}")
                 current_state["current_index"] += 1
-                return self.create_folders_and_copy_files(formatted_refs, db_results)
+                return self.create_folders_and_copy_files(formatted_refs, current_state["db_results"])
             
             # Buscar la carpeta preferida (priorizando la que contiene "instructivo")
             try:
@@ -275,8 +278,8 @@ class ReferenceFolderCreationManager:
                 logger.info(f"✓ Carpeta preferida seleccionada: {source_folder}")
             except Exception as e:
                 logger.warning(f"No se pudo encontrar carpeta preferida: {str(e)}")
-                # Fallback: usar la primera ruta disponible
-                source_folder = db_results[original_ref][0]
+                # Fallback: usar la primera ruta disponible de los resultados guardados
+                source_folder = current_state["db_results"][original_ref][0]
                 logger.info(f"Usando primera ruta disponible: {source_folder}")
             
             # Buscar archivos sin copiarlos
@@ -332,14 +335,14 @@ class ReferenceFolderCreationManager:
             current_state["current_index"] += 1
             
             # Procesar la siguiente referencia
-            return self.create_folders_and_copy_files(formatted_refs, db_results)
+            return self.create_folders_and_copy_files(formatted_refs, current_state["db_results"])
             
         except Exception as e:
             error_msg = f"Error procesando {original_ref}: {str(e)}"
             logger.error(f"✗ {error_msg}")
             current_state["errors"].append(error_msg)
             current_state["current_index"] += 1
-            return self.create_folders_and_copy_files(formatted_refs, db_results)
+            return self.create_folders_and_copy_files(formatted_refs, current_state["db_results"])
 
     def complete_folder_creation(self, ref_key: str, selected_rhino: Optional[str] = None) -> Dict:
         """
@@ -730,12 +733,10 @@ class ReferenceFolderCreationManager:
 
     def _find_preferred_folder(self, reference: str) -> str:
         """
-        [DEPRECATED] Busca la carpeta preferida en la base de datos.
-        Este método está marcado como deprecated ya que la búsqueda en BD ahora se realiza
-        a través del SearchThread. Se mantiene por compatibilidad con código legacy.
+        Busca la carpeta preferida en la base de datos, priorizando carpetas que contengan instructivos.
         
         Args:
-            reference: Referencia a buscar (ej: 'MBT 11306')
+            reference: Referencia a buscar (ej: 'MBT 11306' o texto completo con descripción)
 
         Returns:
             Ruta de la carpeta encontrada
@@ -743,10 +744,19 @@ class ReferenceFolderCreationManager:
         Raises:
             ValueError: Si no se encuentra ninguna carpeta
         """
-        logger.debug(f"[DEPRECATED] Buscando carpeta preferida para: {reference}")
+        logger.debug(f"Buscando carpeta preferida para: {reference}")
         
-        # Normalizar referencia para búsqueda
-        search_ref = normalize_text(reference)
+        # Extraer solo la parte de la referencia (letras y números)
+        extracted_ref = extract_reference(reference)
+        if not extracted_ref:
+            error_msg = f"No se pudo extraer una referencia válida de: {reference}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+            
+        logger.info(f"Referencia extraída: {extracted_ref}")
+        
+        # Normalizar la referencia extraída para búsqueda
+        search_ref = normalize_text(extracted_ref)
         logger.debug(f"Referencia normalizada: {search_ref}")
         
         try:
@@ -761,9 +771,13 @@ class ReferenceFolderCreationManager:
                   AND is_deleted = 0
                 ORDER BY 
                     CASE 
-                        WHEN LOWER(path) LIKE '%instructivo%' THEN 1
-                        WHEN LOWER(path) LIKE '%\\nube\\%' THEN 2
-                        ELSE 3
+                        WHEN LOWER(path) LIKE '%instructivo%' OR LOWER(folder_name) LIKE '%instructivo%' THEN 1
+                        WHEN LOWER(path) LIKE '%\\nube\\%' AND (
+                            LOWER(path) LIKE '%instructivo%' OR 
+                            LOWER(folder_name) LIKE '%instructivo%'
+                        ) THEN 2
+                        WHEN LOWER(path) LIKE '%\\nube\\%' THEN 3
+                        ELSE 4
                     END,
                     path
             """
@@ -772,16 +786,21 @@ class ReferenceFolderCreationManager:
             paths = cursor.fetchall()
             
             if not paths:
-                error_msg = f"No se encontraron carpetas para la referencia: {reference}"
+                error_msg = f"No se encontraron carpetas para la referencia: {extracted_ref}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
+            
+            # Mostrar todas las rutas encontradas para debugging
+            logger.info(f"Rutas encontradas para {extracted_ref}:")
+            for i, path in enumerate(paths):
+                logger.info(f"{i+1}. {path[0]}")
             
             # Tomar el primer resultado (ya ordenado por preferencia)
             chosen_path = paths[0][0]
             
             # Verificar si es una carpeta de instructivo
             is_instructivo = "instructivo" in chosen_path.lower()
-            log_msg = f"Carpeta encontrada: {chosen_path}"
+            log_msg = f"Carpeta seleccionada: {chosen_path}"
             if is_instructivo:
                 log_msg += " (contiene 'Instructivo')"
             logger.info(log_msg)
@@ -1233,7 +1252,8 @@ class ReferenceFolderCreationManager:
 
     def copy_selected_files(self, files_info: Dict, target_folder: Path) -> Dict:
         """
-        Copia los archivos seleccionados a la carpeta destino.
+        Copia los archivos seleccionados al directorio padre de la carpeta destino.
+        Si los archivos ya existen en el directorio padre, no se duplican.
         
         Args:
             files_info: Diccionario con información de los archivos a copiar
@@ -1245,23 +1265,38 @@ class ReferenceFolderCreationManager:
         result = {}
         
         try:
+            # Obtener el directorio padre donde se copiarán los archivos
+            parent_folder = target_folder.parent
+            
             # Copiar PDF si existe
             if files_info.get("pdf"):
                 pdf_source = files_info["pdf"]["source"]
                 pdf_name = files_info["pdf"]["filename"]
-                pdf_target = target_folder / pdf_name
-                shutil.copy2(pdf_source, pdf_target)
-                result["pdf"] = pdf_name
-                logger.info(f"✓ PDF copiado: {pdf_name}")
+                pdf_target = parent_folder / pdf_name
+                
+                # Verificar si el archivo ya existe
+                if not pdf_target.exists():
+                    shutil.copy2(pdf_source, pdf_target)
+                    result["pdf"] = pdf_name
+                    logger.info(f"✓ PDF copiado: {pdf_name}")
+                else:
+                    result["pdf"] = pdf_name
+                    logger.info(f"✓ PDF ya existe en el directorio padre: {pdf_name}")
             
             # Copiar Rhino si existe
             if files_info.get("rhino"):
                 rhino_source = files_info["rhino"]["source"]
                 rhino_name = files_info["rhino"]["filename"]
-                rhino_target = target_folder / rhino_name
-                shutil.copy2(rhino_source, rhino_target)
-                result["rhino"] = rhino_name
-                logger.info(f"✓ Rhino copiado: {rhino_name}")
+                rhino_target = parent_folder / rhino_name
+                
+                # Verificar si el archivo ya existe
+                if not rhino_target.exists():
+                    shutil.copy2(rhino_source, rhino_target)
+                    result["rhino"] = rhino_name
+                    logger.info(f"✓ Rhino copiado: {rhino_name}")
+                else:
+                    result["rhino"] = rhino_name
+                    logger.info(f"✓ Rhino ya existe en el directorio padre: {rhino_name}")
             
             return result
             
@@ -1300,4 +1335,13 @@ class ReferenceFolderCreationManager:
         
         # Si no se encuentra ninguna categoría específica, usar AMBIENTE como predeterminado
         logger.warning(f"No se pudo determinar categoría específica para ruta: {path}")
-        return "AMBIENTE" 
+        return "AMBIENTE"
+
+    def set_progress_callback(self, callback: Callable[[str], None]):
+        """Establece la función de callback para reportar progreso"""
+        self._progress_callback = callback
+        
+    def _report_progress(self, message: str):
+        """Reporta progreso si hay un callback configurado"""
+        if self._progress_callback:
+            self._progress_callback(message) 
