@@ -456,6 +456,43 @@ class SearchThread(QThread):
                             self.found_paths.add(full_path)
                             self.new_result.emit(idx, full_path, "Excel", search_reference)
 
+    def verify_and_update_path(self, idx: int, text_line: str, path: str, folder_name: str):
+        """
+        Verifica y actualiza una ruta inválida en la base de datos.
+        
+        Args:
+            idx (int): Índice de la referencia
+            text_line (str): Texto de la referencia
+            path (str): Ruta a verificar
+            folder_name (str): Nombre de la carpeta
+        """
+        print(f"Verificando y actualizando ruta: {path}")
+        
+        # Buscar la carpeta en las rutas base
+        for base_path in self.paths:
+            try:
+                for root, dirs, _ in os.walk(base_path):
+                    for dir in dirs:
+                        if dir == folder_name:
+                            new_path = os.path.join(root, dir)
+                            if os.path.exists(new_path):
+                                print(f"Nueva ruta encontrada: {new_path}")
+                                # Actualizar en la base de datos
+                                insert_folder(folder_name, new_path)
+                                # Agregar a resultados si es una coincidencia exacta
+                                if is_exact_match(text_line, folder_name):
+                                    if new_path not in self.found_paths:
+                                        self.results[idx] = [(new_path, "Carpeta", text_line)]
+                                        self.found_paths.add(new_path)
+                                        self.new_result.emit(idx, new_path, "Carpeta", text_line)
+                                        if "Carpetas" not in self.file_types:
+                                            self.search_in_folder(new_path, text_line, idx)
+                                # Pre-búsqueda en la nueva ruta
+                                self.pre_search_in_db_path(new_path, text_line, idx)
+                            return
+            except Exception as e:
+                print(f"Error verificando ruta {base_path}: {str(e)}")
+                continue
 
     def processPath(self, path):
         if self.isInterruptionRequested():

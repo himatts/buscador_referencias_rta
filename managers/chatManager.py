@@ -208,7 +208,7 @@ class ChatManager(QObject):
         
     def start_folder_creation_process(self, references: List[str], db_results: Optional[Dict[str, List[str]]] = None):
         """
-        Inicia el proceso de creación de carpetas en un hilo separado.
+        Inicia el proceso de creación de carpetas.
         
         Args:
             references: Lista de referencias a procesar
@@ -220,9 +220,9 @@ class ChatManager(QObject):
                 raise ProcessStepError(self.ESTADO_INICIAL, "No se proporcionaron referencias")
                 
             self.current_references = references
+            self.db_results = db_results or {}
             self.conversation_history = []
             self.error_recovery_attempts = {}
-            self.current_step = self.ESTADO_INICIAL
             
             # Reiniciar contadores de tokens
             self.llm_manager.total_input_tokens = 0
@@ -236,103 +236,33 @@ class ChatManager(QObject):
             )
             self.llm_response.emit("Sistema", welcome_message, False)
             
-            # Clasificar referencias encontradas y no encontradas
-            found_refs = []
-            not_found_refs = []
-            
-            for ref in references:
-                paths = db_results.get(ref, [])
-                if paths:
-                    found_refs.append(ref)
-                else:
-                    not_found_refs.append(ref)
-            
-            # Guardar en el contexto
-            self.step_context = {
-                'db_results': db_results,
-                'found_refs': found_refs,
-                'not_found_refs': not_found_refs,
-                'total_refs': len(references)
-            }
-            
-            # Generar mensaje informativo para el chat
-            message = f"He encontrado {len(found_refs)} referencias en la base de datos"
-            if not_found_refs:
-                message += f" y {len(not_found_refs)} no fueron encontradas"
-            message += ".\n\n"
-            
-            if found_refs:
-                message += "Referencias encontradas:\n"
-                for ref in found_refs:
-                    formatted_ref = extract_reference(ref)
-                    if formatted_ref:
-                        message += f"• {formatted_ref}\n"
-                    else:
-                        message += f"• {ref}\n"
-                message += "\n"
-            
-            if not_found_refs:
-                message += "Referencias no encontradas:\n"
-                for ref in not_found_refs:
-                    formatted_ref = extract_reference(ref)
-                    if formatted_ref:
-                        message += f"• {formatted_ref}\n"
-                    else:
-                        message += f"• {ref}\n"
-                message += "\n"
-            
-            message += "¿Deseas continuar con la búsqueda en Google Sheets y formateo de referencias?"
-            
-            self.llm_response.emit("Sistema", message, False)
-            
-            # Mostrar botones de acción
-            actions = [
-                {
-                    'text': 'Sí',
-                    'callback': lambda: self._handle_verification_response(True)
-                },
-                {
-                    'text': 'No',
-                    'callback': lambda: self._handle_verification_response(False)
-                }
-            ]
-            self.controller.main_window.chat_panel.show_action_buttons(actions)
-            
-            # Transicionar al estado de verificación
+            # Iniciar el proceso desde la verificación de referencias
             self._transition_to_step(self.ESTADO_VERIFICAR_REFERENCIAS)
+            self.process_next_step()
             
         except Exception as e:
             error_msg = self._handle_error(e)
             self.llm_response.emit("Sistema", error_msg, True)
             
-    def _handle_verification_response(self, accepted: bool):
-        """Maneja la respuesta del usuario a la verificación de referencias."""
+    def _handle_rhino_selection_required(self, selection_data: Dict):
+        """
+        Maneja la solicitud de selección de archivo Rhino desde el hilo.
+        
+        Args:
+            selection_data: Diccionario con la información necesaria para la selección
+        """
         try:
-            self.controller.main_window.chat_panel.clear_action_buttons()
+            # Guardar información en el contexto
+            self.pending_rhino_selection = selection_data
             
-            if accepted:
-                # Crear y configurar el hilo de creación de carpetas
-                self.folder_creation_thread = FolderCreationThread(
-                    self.controller.folder_creation_manager,
-                    self.current_references,
-                    self.step_context.get('db_results', {})
-                )
-                
-                # Conectar señales
-                self.folder_creation_thread.progress.connect(self._update_progress)
-                self.folder_creation_thread.error.connect(self._handle_thread_error)
-                self.folder_creation_thread.finished.connect(self._process_folder_results)
-                
-                # Transicionar al siguiente estado
-                self._transition_to_step(self.ESTADO_BUSCAR_SHEETS)
-                
-                # Iniciar el proceso
-                self.folder_creation_thread.start()
-            else:
-                self.llm_response.emit("Sistema", "Proceso cancelado.", False)
-                self._transition_to_step(self.ESTADO_FINALIZADO)
-                
+            # Transicionar al estado de selección
+            self._transition_to_step(self.ESTADO_SELECCIONAR_RHINO)
+            
+            # Mostrar opciones al usuario
+            self.process_single_reference()
+            
         except Exception as e:
+            logger.error(f"Error al manejar solicitud de selección: {str(e)}")
             error_msg = self._handle_error(e)
             self.llm_response.emit("Sistema", error_msg, True)
             self._transition_to_step(self.ESTADO_ERROR)
@@ -402,15 +332,6 @@ class ChatManager(QObject):
             self.folder_creation_thread.stop()
             self.folder_creation_thread.wait()
 
-    def _update_progress(self, message: str):
-        """Actualiza el progreso en la interfaz"""
-        self.llm_response.emit("Sistema", message, False)
-        
-    def _handle_thread_error(self, error_message: str):
-        """Maneja errores del hilo de creación de carpetas"""
-        self.llm_response.emit("Sistema", f"Error en el proceso: {error_message}", True)
-        self._transition_to_step(self.ESTADO_ERROR)
-
     def _update_tokens_display(self):
         """Actualiza la visualización de tokens en la interfaz."""
         input_tokens, output_tokens = self.llm_manager.get_token_counts()
@@ -435,7 +356,9 @@ class ChatManager(QObject):
                         target_folder = self.step_context.get("target_folder")
                         if target_folder:
                             # Copiar el archivo Rhino seleccionado
-                            rhino_name = os.path.basename(chosen_path).upper()
+                            file_name = os.path.splitext(os.path.basename(chosen_path))
+                            display_name = f"{file_name[0].upper()}{file_name[1]}"  # Nombre en mayúsculas + extensión original
+                            rhino_name = display_name
                             rhino_target = os.path.join(target_folder, rhino_name)
                             shutil.copy2(chosen_path, rhino_target)
                             
@@ -538,50 +461,39 @@ class ChatManager(QObject):
         """
         try:
             # Verificar si hay referencias pendientes
-            if not self.pending_rhino_selection or not self.pending_rhino_selection.get("pending_files"):
+            if not self.pending_rhino_selection:
                 logger.warning("No hay referencias pendientes para procesar")
                 return
 
+            # Limpiar selección anterior y establecer referencia actual
+            self.step_context['selected_rhino'] = None
+            self.step_context['current_reference'] = self.pending_rhino_selection["original"]
+
             # Obtener la referencia actual y sus datos
             current_ref = self.pending_rhino_selection["original"]
-            ref_data = self.pending_rhino_selection["pending_files"][current_ref]
+            formatted_name = self.pending_rhino_selection.get("nombre_formateado", current_ref)
+            rhino_alternatives = self.pending_rhino_selection.get("rhino_alternatives", [])
             
-            # Obtener el nombre formateado del contexto
-            formatted_name = None
-            if "formatted_refs" in self.step_context:
-                for ref in self.step_context["formatted_refs"]:
-                    if ref["original"] == current_ref:
-                        # Asegurarnos de obtener el nombre formateado completo
-                        if isinstance(ref["nombre_formateado"], tuple):
-                            formatted_name = ref["nombre_formateado"][0]
-                        else:
-                            formatted_name = ref["nombre_formateado"]
-                        break
-
-            # Si no encontramos el nombre formateado en el contexto, intentar obtenerlo de ref_data
-            if not formatted_name and "nombre_formateado" in ref_data:
-                if isinstance(ref_data["nombre_formateado"], tuple):
-                    formatted_name = ref_data["nombre_formateado"][0]
-                else:
-                    formatted_name = ref_data["nombre_formateado"]
-
             # 1. Mostrar mensaje solicitando la selección del archivo Rhino
-            message = f"\nPor favor, selecciona el archivo Rhino para la referencia:\n{formatted_name if formatted_name else current_ref}"
-            
-            # Obtener las alternativas de archivos Rhino
-            rhino_alternatives = []
-            if ref_data.get("files_info", {}).get("rhino_alternatives"):
-                rhino_alternatives = ref_data["files_info"]["rhino_alternatives"]
+            message = f"\nPor favor, selecciona el archivo Rhino para la referencia:\n<b>{formatted_name}</b>\n"
             
             if rhino_alternatives:
                 # 2. Si hay múltiples archivos, mostrar la lista
-                message += "\n\nSe han encontrado los siguientes archivos Rhino:\n\n"
+                message += "\n\nSe han encontrado los siguientes archivos Rhino: <br>\n\n---\n\n <br>"
                 
                 for i, path in enumerate(rhino_alternatives):
                     if i > 0:
                         message += "\n\n---\n\n"  # Divisor entre archivos con más espacio
                         
-                    file_name = os.path.basename(path)
+                    # Separar nombre y extensión del archivo
+                    file_name = os.path.splitext(os.path.basename(path))
+                    display_name = f"{file_name[0].upper()}{file_name[1]}"  # Nombre en mayúsculas + extensión original
+                    message += f"<b>{display_name}</b>\n\n"  # Doble salto después del nombre
+                    
+                    # Verificar si este archivo ya fue seleccionado
+                    selected_rhino = self.step_context.get('selected_rhino')
+                    is_selected = path == selected_rhino if selected_rhino else False
+                    
                     # Botón para abrir carpeta
                     folder_button = {
                         'text': "📁 Abrir carpeta",
@@ -594,14 +506,14 @@ class ChatManager(QObject):
                         'path': path,
                         'type': 'rhino'
                     }
-                    # Botón para elegir archivo
+                    # Botón para elegir archivo (deshabilitado si ya fue seleccionado)
                     choose_button = {
-                        'text': "✅ Elegir este archivo",
+                        'text': "✅ Archivo seleccionado" if is_selected else "✅ Elegir este archivo",
                         'path': path,
-                        'type': 'choose_rhino'
+                        'type': 'choose_rhino',
+                        'disabled': is_selected
                     }
                     
-                    message += f"<b>{file_name}</b>\n\n"  # Doble salto después del nombre
                     message += f"<file_button>{folder_button}</file_button> "
                     message += f"<file_button>{file_button}</file_button> "
                     message += f"<file_button>{choose_button}</file_button>"
@@ -640,52 +552,43 @@ class ChatManager(QObject):
 
             ref_data = self.pending_rhino_selection
             original_ref = ref_data.get('original')
-            pending_files = ref_data.get('pending_files', {})
+            is_last = ref_data.get('is_last', False)
             
             # Procesar la selección actual
             if selection_type in ['choose_rhino', 'skip_rhino']:
                 selected_rhino = file_path if selection_type == 'choose_rhino' else None
-                results = self.controller.folder_creation_manager.complete_folder_creation(
-                    ref_key=original_ref,
-                    selected_rhino=selected_rhino
-                )
                 
-                # 4. Mostrar mensaje de éxito para la referencia actual
-                if not results.get("errors"):
+                # Notificar al hilo sobre la selección
+                if hasattr(self, 'folder_creation_thread'):
+                    self.folder_creation_thread.set_rhino_selection(original_ref, selected_rhino)
+                
+                # Mostrar mensaje de confirmación
+                if selected_rhino:
+                    formatted_name = self.pending_rhino_selection.get('nombre_formateado', original_ref)
                     self.llm_response.emit(
                         "Sistema",
-                        f"✅ Carpeta creada exitosamente para {original_ref}",
+                        f"✅ Archivo Rhino seleccionado para <b>{formatted_name}</b>",
                         False
                     )
                 else:
-                    error_msg = "\n".join(error.replace('**', '') for error in results["errors"])
+                    # Cuando se omite el archivo Rhino
+                    formatted_name = self.pending_rhino_selection.get('nombre_formateado', original_ref)
                     self.llm_response.emit(
                         "Sistema",
-                        f"❌ Error al crear carpeta para {original_ref}: {error_msg}",
-                        True
+                        f"❌ Se omitió el archivo Rhino para <b>{formatted_name}</b>",
+                        False
                     )
                 
-                # Eliminar la referencia actual de pendientes
-                if original_ref in pending_files:
-                    del pending_files[original_ref]
+                # Si es la última referencia, mostrar mensaje de espera
+                if is_last:
+                    self.llm_response.emit(
+                        "Sistema",
+                        "Procesando última referencia y generando resumen final...",
+                        False
+                    )
                 
-                # 5. Pequeña pausa antes de continuar (implementada a través del tiempo de procesamiento)
-                
-                # 6. Procesar siguiente referencia si hay pendientes
-                if pending_files:
-                    next_ref = next(iter(pending_files))
-                    self.pending_rhino_selection = {
-                        "original": next_ref,
-                        "pending_files": pending_files,
-                        **pending_files[next_ref]
-                    }
-                    # Procesar la siguiente referencia
-                    self.process_single_reference()
-                else:
-                    # No hay más referencias pendientes, mostrar resumen final
-                    self._show_final_summary(results)
-                    self.pending_rhino_selection = None
-                    self._transition_to_step(self.ESTADO_FINALIZADO)
+                # Limpiar el estado actual
+                self.pending_rhino_selection = None
 
         except Exception as e:
             logger.error(f"Error al manejar selección de archivo: {str(e)}")
@@ -705,20 +608,17 @@ class ChatManager(QObject):
                 return
 
             if self.current_step == self.ESTADO_VERIFICAR_REFERENCIAS:
-                # Solo buscar en la base de datos si no tenemos resultados previos
-                if 'db_results' not in self.step_context:
-                    logger.warning("No hay resultados de búsqueda previos. Se requiere ejecutar SearchThread primero.")
-                    self.llm_response.emit(
-                        "Sistema",
-                        "Error: No se encontraron resultados de búsqueda. Por favor, inicia la búsqueda primero.",
-                        True
-                    )
-                    return
+                # Obtener las referencias encontradas y no encontradas
+                found_refs = []
+                not_found_refs = []
+                
+                for ref in self.current_references:
+                    if ref in self.db_results:
+                        found_refs.append(ref)
+                    else:
+                        not_found_refs.append(ref)
                 
                 # Generar mensaje informativo para el chat
-                found_refs = self.step_context['found_refs']
-                not_found_refs = self.step_context['not_found_refs']
-                
                 message = f"He encontrado {len(found_refs)} referencias en la base de datos"
                 if not_found_refs:
                     message += f" y {len(not_found_refs)} no fueron encontradas"
@@ -742,9 +642,9 @@ class ChatManager(QObject):
                             message += f"• {formatted_ref}\n"
                         else:
                             message += f"• {ref}\n"
-                    message += "\n¿Deseas reformatear y crear las carpetas para los datos encontrados?"
-                else:
-                    message += "¿Deseas reformatear y crear las carpetas para los datos encontrados?"
+                    message += "\n"
+                
+                message += "¿Deseas reformatear y crear las carpetas para los datos encontrados?"
                 
                 self.llm_response.emit("Sistema", message, False)
                 
@@ -761,159 +661,27 @@ class ChatManager(QObject):
                 ]
                 self.controller.main_window.chat_panel.show_action_buttons(actions)
                 
-                # Actualizar tokens después de la operación
-                input_tokens, output_tokens = self.llm_manager.get_token_counts()
-                self.controller.main_window.chat_panel.update_tokens(input_tokens, output_tokens)
-                
             elif self.current_step == self.ESTADO_BUSCAR_SHEETS:
-                # Buscar en Google Sheets y formatear nombres
-                try:
-                    # Capturar y registrar el inicio del proceso
-                    logger.info("Iniciando búsqueda en Google Sheets y formateo de nombres")
-                    
-                    formatted_refs = self.controller.folder_creation_manager.fetch_and_format_with_sheets(
-                        self.current_references
-                    )
-                    
-                    logger.info(f"Referencias formateadas recibidas: {formatted_refs}")
-                    
-                    # Verificar si hay errores en las referencias formateadas
-                    refs_with_errors = [ref for ref in formatted_refs if 'error' in ref]
-                    refs_without_errors = [ref for ref in formatted_refs if 'error' not in ref]
-                    
-                    logger.info(f"Referencias con errores: {len(refs_with_errors)}")
-                    logger.info(f"Referencias sin errores: {len(refs_without_errors)}")
-                    
-                    if refs_without_errors:
-                        # Actualizar tabla de contenido con nombres formateados
-                        entry = self.controller.main_window.entry
-                        for ref_data in refs_without_errors:
-                            # Buscar la referencia original en la tabla y actualizarla
-                            for row in range(entry.rowCount()):
-                                item = entry.item(row, 0)
-                                if item and item.text().strip() == ref_data['original']:
-                                    # Extraer solo el nombre formateado de la tupla (nombre, costo)
-                                    nombre_formateado = ref_data['nombre_formateado'][0] if isinstance(ref_data['nombre_formateado'], tuple) else ref_data['nombre_formateado']
-                                    item.setText(nombre_formateado)
-                                    break
-                        
-                        # Actualizar contexto - asegurarnos de guardar solo los campos necesarios
-                        self.step_context.update({
-                            'formatted_refs': [{
-                                'original': ref['original'],
-                                'nombre_formateado': ref['nombre_formateado'][0] if isinstance(ref['nombre_formateado'], tuple) else ref['nombre_formateado']
-                            } for ref in refs_without_errors]
-                        })
-                        
-                        logger.info(f"Contexto actualizado: {self.step_context}")
-                        
-                        # Generar mensaje con los nombres formateados
-                        message = "He obtenido los siguientes nombres formateados:<br><br>"
-                        
-                        # Primero mostrar las referencias exitosas
-                        for ref in refs_without_errors:
-                            nombre_formateado = ref['nombre_formateado'][0] if isinstance(ref['nombre_formateado'], tuple) else ref['nombre_formateado']
-                            message += f'• <b>Original:</b> {ref["original"]}<br>'
-                            message += f'• <b>Formateado:</b> {nombre_formateado}<br><br>'
-                        
-                        # Luego mostrar las referencias con error
-                        if refs_with_errors:
-                            message += "Referencias con problemas:<br>"
-                            for ref in refs_with_errors:
-                                message += f'• {ref["original"]}: {ref["error"]}<br>'
-                            message += "<br>"
-                        
-                        message += "¿Deseas continuar con la creación de carpetas?"
-                        
-                        self.llm_response.emit("Sistema", message, False)
-                        
-                        # Mostrar botones de acción
-                        actions = [
-                            {
-                                'text': 'Sí',
-                                'callback': lambda: self._handle_sheets_response(True)
-                            },
-                            {
-                                'text': 'No',
-                                'callback': lambda: self._handle_sheets_response(False)
-                            }
-                        ]
-                        self.controller.main_window.chat_panel.show_action_buttons(actions)
-                        
-                        # Actualizar tokens después de la operación
-                        input_tokens, output_tokens = self.llm_manager.get_token_counts()
-                        self.controller.main_window.chat_panel.update_tokens(input_tokens, output_tokens)
-                        
-                    else:
-                        error_message = "No se pudo formatear ninguna referencia correctamente.<br><br>"
-                        if refs_with_errors:
-                            error_message += "Errores encontrados:<br>"
-                            for ref in refs_with_errors:
-                                error_message += f'• {ref["original"]}: {ref["error"]}<br>'
-                        raise ProcessStepError("buscar_sheets", error_message)
-                    
-                except ProcessStepError as e:
-                    logger.error(f"Error en el proceso: {str(e)}")
-                    raise
-                except Exception as e:
-                    logger.error(f"Error inesperado: {str(e)}")
-                    raise ProcessStepError(
-                        "buscar_sheets",
-                        f"Error al obtener información de Google Sheets: {str(e)}"
-                    )
-                    
-            elif self.current_step == self.ESTADO_CREAR_CARPETAS:
-                try:
-                    # Preparar las referencias en el formato correcto
-                    formatted_refs_for_creation = []
-                    for ref in self.step_context['formatted_refs']:
-                        formatted_refs_for_creation.append({
-                            'original': ref['original'],
-                            'nombre_formateado': ref['nombre_formateado']
-                        })
-                    
-                    results = self.controller.folder_creation_manager.create_folders_and_copy_files(
-                        formatted_refs_for_creation,
-                        self.step_context.get('db_results', {})
-                    )
-                    
-                    # Si hay archivos pendientes de selección
-                    if results.get("pending_files"):
-                        # Guardar información en el contexto
-                        self.step_context["pending_files"] = results["pending_files"]
-                        
-                        # Tomar la primera referencia pendiente
-                        ref_key = next(iter(results["pending_files"]))
-                        self.pending_rhino_selection = {
-                            "original": ref_key,
-                            "pending_files": results["pending_files"],
-                            **results["pending_files"][ref_key]
-                        }
-                        
-                        self._transition_to_step(self.ESTADO_SELECCIONAR_RHINO)
-                        # Iniciar el proceso secuencial para la primera referencia
-                        self.process_single_reference()
-                        return
-                    
-                    # Si no hay archivos pendientes, mostrar el resumen final
-                    if results["processed"]:
-                        self._show_final_summary(results)
-                        self._transition_to_step(self.ESTADO_FINALIZADO)
-                    else:
-                        self.llm_response.emit(
-                            "Sistema",
-                            "No se pudo procesar ninguna referencia correctamente.",
-                            True
-                        )
-                        self._transition_to_step(self.ESTADO_ERROR)
-
-                except Exception as e:
-                    logger.error(f"Error al crear carpetas: {str(e)}")
-                    raise ProcessStepError(
-                        "crear_carpetas",
-                        f"Error al crear carpetas: {str(e)}"
-                    )
-                    
+                # Crear y configurar el hilo para formatear nombres
+                self.format_thread = FolderCreationThread(
+                    self.controller.folder_creation_manager,
+                    self.current_references,
+                    self.db_results,
+                    format_only=True  # Indicar que solo queremos formatear nombres
+                )
+                
+                # Conectar señales específicas para el formateo
+                self.format_thread.progress.connect(
+                    lambda msg: self.llm_response.emit("Sistema", msg, False)
+                )
+                self.format_thread.error.connect(
+                    lambda msg: self.llm_response.emit("Sistema", msg, True)
+                )
+                self.format_thread.finished.connect(self._handle_format_complete)
+                
+                # Iniciar el hilo
+                self.format_thread.start()
+                
         except Exception as e:
             error_msg = self._handle_error(e)
             self.llm_response.emit("Sistema", error_msg, True)
@@ -925,7 +693,26 @@ class ChatManager(QObject):
         self.controller.main_window.chat_panel.clear_action_buttons()
         if accepted:
             self._transition_to_step(self.ESTADO_CREAR_CARPETAS)
-            self.process_next_step()
+            # Crear y configurar el hilo de creación de carpetas con las referencias ya formateadas
+            self.folder_creation_thread = FolderCreationThread(
+                self.controller.folder_creation_manager,
+                self.current_references,
+                self.db_results,
+                formatted_refs=self.step_context.get('formatted_refs', [])  # Pasar las referencias ya formateadas
+            )
+            
+            # Conectar señales
+            self.folder_creation_thread.progress.connect(
+                lambda msg: self.llm_response.emit("Sistema", msg, False)
+            )
+            self.folder_creation_thread.error.connect(
+                lambda msg: self.llm_response.emit("Sistema", msg, True)
+            )
+            self.folder_creation_thread.finished.connect(self._show_final_summary)
+            self.folder_creation_thread.rhinoSelectionRequired.connect(self._handle_rhino_selection_required)
+            
+            # Iniciar el hilo
+            self.folder_creation_thread.start()
         else:
             self.llm_response.emit("Sistema", "Proceso cancelado.", False)
             self._transition_to_step(self.ESTADO_FINALIZADO)
@@ -963,9 +750,11 @@ class ChatManager(QObject):
                 message += f"<file_button>{folder_button}</file_button>"
                 
                 if ref['copied_files'].get('pdf'):
+                    pdf_name = os.path.splitext(ref['copied_files']["pdf"])
+                    pdf_display_name = f"{pdf_name[0].upper()}{pdf_name[1]}"
                     pdf_path = os.path.join(ref["target_folder"], ref['copied_files']["pdf"])
                     pdf_button = {
-                        'text': f"📄 {ref['copied_files']['pdf']}",
+                        'text': f"📄 {pdf_display_name}",
                         'path': pdf_path,
                         'type': 'pdf',
                         'indent': True
@@ -973,9 +762,11 @@ class ChatManager(QObject):
                     message += f"\n<file_button>{pdf_button}</file_button>"
                     
                 if ref['copied_files'].get('rhino'):
+                    rhino_name = os.path.splitext(ref['copied_files']["rhino"])
+                    rhino_display_name = f"{rhino_name[0].upper()}{rhino_name[1]}"
                     rhino_path = os.path.join(ref["target_folder"], ref['copied_files']["rhino"])
                     rhino_button = {
-                        'text': f"🔧 {ref['copied_files']['rhino']}",
+                        'text': f"🔧 {rhino_display_name}",
                         'path': rhino_path,
                         'type': 'rhino',
                         'indent': True
@@ -1000,3 +791,97 @@ class ChatManager(QObject):
                 }
             ]
             self.controller.main_window.chat_panel.show_action_buttons(actions) 
+
+    def _handle_verification_response(self, accepted: bool):
+        """Maneja la respuesta del usuario a la verificación de referencias."""
+        self.controller.main_window.chat_panel.clear_action_buttons()
+        if accepted:
+            self._transition_to_step(self.ESTADO_BUSCAR_SHEETS)
+            self.llm_response.emit(
+                "Sistema",
+                "Excelente. Procederé a buscar la información en Google Sheets.",
+                False
+            )
+            self.process_next_step()
+        else:
+            self.llm_response.emit("Sistema", "Proceso cancelado.", False)
+            self._transition_to_step(self.ESTADO_FINALIZADO) 
+
+    def _handle_format_complete(self, results: Dict):
+        """
+        Maneja la finalización del formateo de nombres.
+        
+        Args:
+            results: Diccionario con los resultados del formateo
+        """
+        try:
+            # Verificar si hay errores en las referencias formateadas
+            refs_with_errors = [ref for ref in results.get("formatted_refs", []) if 'error' in ref]
+            refs_without_errors = [ref for ref in results.get("formatted_refs", []) if 'error' not in ref]
+            
+            if refs_without_errors:
+                # Actualizar tabla de contenido con nombres formateados
+                entry = self.controller.main_window.entry
+                for ref_data in refs_without_errors:
+                    # Buscar la referencia original en la tabla y actualizarla
+                    for row in range(entry.rowCount()):
+                        item = entry.item(row, 0)
+                        if item and item.text().strip() == ref_data['original']:
+                            # Extraer solo el nombre formateado
+                            nombre_formateado = ref_data['nombre_formateado'][0] if isinstance(ref_data['nombre_formateado'], tuple) else ref_data['nombre_formateado']
+                            item.setText(nombre_formateado)
+                            break
+                
+                # Actualizar contexto
+                self.step_context.update({
+                    'formatted_refs': refs_without_errors,
+                    'db_results': self.db_results  # Asegurar que los resultados de BD estén disponibles
+                })
+                
+                # Generar mensaje con los nombres formateados
+                message = "He obtenido los siguientes nombres formateados:<br><br>"
+                
+                # Primero mostrar las referencias exitosas
+                for ref in refs_without_errors:
+                    nombre_formateado = ref['nombre_formateado'][0] if isinstance(ref['nombre_formateado'], tuple) else ref['nombre_formateado']
+                    message += f'• <b>Original:</b> {ref["original"]}<br>'
+                    message += f'• <b>Formateado:</b> {nombre_formateado}<br><br>'
+                
+                # Luego mostrar las referencias con error
+                if refs_with_errors:
+                    message += "Referencias con problemas:<br>"
+                    for ref in refs_with_errors:
+                        message += f'• {ref["original"]}: {ref["error"]}<br>'
+                    message += "<br>"
+                
+                message += "¿Deseas continuar con la creación de carpetas?"
+                
+                self.llm_response.emit("Sistema", message, False)
+                
+                # Mostrar botones de acción
+                actions = [
+                    {
+                        'text': 'Sí',
+                        'callback': lambda: self._handle_sheets_response(True)
+                    },
+                    {
+                        'text': 'No',
+                        'callback': lambda: self._handle_sheets_response(False)
+                    }
+                ]
+                self.controller.main_window.chat_panel.show_action_buttons(actions)
+                
+            else:
+                error_message = "No se pudo formatear ninguna referencia correctamente.<br><br>"
+                if refs_with_errors:
+                    error_message += "Errores encontrados:<br>"
+                    for ref in refs_with_errors:
+                        error_message += f'• {ref["original"]}: {ref["error"]}<br>'
+                self.llm_response.emit("Sistema", error_message, True)
+                self._transition_to_step(self.ESTADO_ERROR)
+            
+        except Exception as e:
+            error_msg = self._handle_error(e)
+            self.llm_response.emit("Sistema", error_msg, True)
+            self.error_occurred.emit("formateo", str(e))
+            self._transition_to_step(self.ESTADO_ERROR) 

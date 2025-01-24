@@ -344,96 +344,134 @@ class ReferenceFolderCreationManager:
             current_state["current_index"] += 1
             return self.create_folders_and_copy_files(formatted_refs, current_state["db_results"])
 
-    def complete_folder_creation(self, ref_key: str, selected_rhino: Optional[str] = None) -> Dict:
+    def complete_folder_creation(self, reference: str, selected_rhino: Optional[str] = None) -> Dict:
         """
-        Completa el proceso de creación de carpetas después de la selección de archivo Rhino
-        y continúa con el procesamiento de las siguientes referencias.
+        Completa la creación de la carpeta copiando los archivos necesarios.
+        Los archivos PDF y Rhino se copian en el directorio padre de la carpeta de la referencia.
         
         Args:
-            ref_key: Clave de la referencia pendiente
-            selected_rhino: Ruta del archivo Rhino seleccionado (None si se omitió)
+            reference: Referencia original
+            selected_rhino: Ruta del archivo Rhino seleccionado (opcional)
             
         Returns:
-            Dict con resultados del proceso
+            Dict con los resultados del proceso
         """
-        logger.info("=== COMPLETANDO CREACIÓN DE CARPETAS ===")
+        logger.info(f"Completando creación de carpeta para {reference}")
         
         try:
-            # Obtener información pendiente
+            # Buscar la información en el estado actual
             current_state = getattr(self, '_processing_state', {})
-            if not current_state:
-                raise ValueError("No hay estado de procesamiento activo")
+            ref_data = None
+            
+            for ref in current_state.get("refs_to_process", []):
+                if ref["original"] == reference:
+                    ref_data = ref
+                    break
+                    
+            if not ref_data:
+                raise ValueError(f"No se encontró información para la referencia {reference}")
                 
-            pending_info = current_state.get("pending_files", {}).get(ref_key)
-            if not pending_info:
-                raise ValueError(f"No hay información pendiente para la referencia {ref_key}")
-            
-            # Actualizar información de archivos con la selección
-            files_info = pending_info["files_info"]
-            if selected_rhino:
-                files_info["rhino"] = {
-                    "source": selected_rhino,
-                    "filename": os.path.basename(selected_rhino).upper()
-                }
-            
-            # Crear estructura de carpetas
+            # Obtener rutas
+            source_folder = self._find_preferred_folder(reference)
+            if not source_folder:
+                raise ValueError(f"No se encontró carpeta fuente para {reference}")
+                
+            # Crear la estructura de carpetas
             target_folder = self._create_folder_structure(
-                reference_name=pending_info["final_name"],
-                category=pending_info["category"],
-                source_path=pending_info["source_folder"]
+                reference_name=ref_data['nombre_formateado'],
+                category=ref_data.get('category', ''),
+                source_path=source_folder
             )
-            logger.info(f"✓ Estructura de carpetas creada: {target_folder}")
             
-            # Copiar los archivos
-            copy_results = self.copy_selected_files(files_info, target_folder)
-            logger.info("✓ Archivos copiados exitosamente")
+            # Obtener el directorio padre donde se copiarán los archivos
+            parent_folder = Path(target_folder).parent
             
-            # Registrar resultado exitoso
-            current_state["processed"].append({
-                "original": ref_key,
-                "final_name": pending_info["final_name"],
+            # Inicializar diccionario de archivos copiados y errores
+            copied_files = {}
+            errors = []
+            
+            # Primero buscar y copiar el PDF
+            logger.info("Buscando y copiando archivos PDF...")
+            copy_result = self._copy_files(source_folder, parent_folder)
+            
+            # Si hay un PDF encontrado, agregarlo al resultado
+            if copy_result.get("pdf"):
+                pdf_name = os.path.basename(copy_result["pdf"])
+                pdf_target = parent_folder / pdf_name
+                
+                # Verificar si el archivo ya existe
+                if not pdf_target.exists():
+                    try:
+                        shutil.copy2(copy_result["pdf"], pdf_target)
+                        copied_files["pdf"] = pdf_name
+                        logger.info(f"✓ PDF copiado: {pdf_name}")
+                    except Exception as e:
+                        error_msg = f"Error copiando PDF: {str(e)}"
+                        logger.error(error_msg)
+                        errors.append(error_msg)
+                else:
+                    copied_files["pdf"] = pdf_name
+                    logger.info(f"✓ PDF ya existe en el directorio padre: {pdf_name}")
+            
+            # Si se proporcionó un archivo Rhino específico, copiarlo
+            if selected_rhino and os.path.exists(selected_rhino):
+                logger.info("Copiando archivo Rhino seleccionado...")
+                rhino_name = os.path.basename(selected_rhino).upper()
+                rhino_target = parent_folder / rhino_name
+                
+                # Verificar si el archivo ya existe
+                if not rhino_target.exists():
+                    try:
+                        shutil.copy2(selected_rhino, rhino_target)
+                        copied_files["rhino"] = rhino_name
+                        logger.info(f"✓ Archivo Rhino copiado exitosamente: {rhino_name}")
+                    except Exception as e:
+                        error_msg = f"Error copiando archivo Rhino: {str(e)}"
+                        logger.error(error_msg)
+                        errors.append(error_msg)
+                else:
+                    copied_files["rhino"] = rhino_name
+                    logger.info(f"✓ Archivo Rhino ya existe en el directorio padre: {rhino_name}")
+            else:
+                logger.info("No se proporcionó archivo Rhino para copiar")
+            
+            # Actualizar el estado de procesamiento
+            processed_info = {
+                "original": reference,
+                "final_name": ref_data['nombre_formateado'],
                 "target_folder": str(target_folder),
-                "source_folder": pending_info["source_folder"],
-                "copied_files": copy_results
-            })
+                "parent_folder": str(parent_folder),
+                "source_folder": source_folder,
+                "copied_files": copied_files
+            }
             
-            # Eliminar la referencia de pendientes
-            if ref_key in current_state["pending_files"]:
-                del current_state["pending_files"][ref_key]
+            # Agregar al estado actual
+            if "processed" not in current_state:
+                current_state["processed"] = []
+            current_state["processed"].append(processed_info)
             
-            # Avanzar al siguiente índice
-            current_state["current_index"] += 1
+            # Eliminar de pendientes si existe
+            if "pending_files" in current_state and reference in current_state["pending_files"]:
+                del current_state["pending_files"][reference]
             
-            # Continuar con el procesamiento de las siguientes referencias
-            formatted_refs = current_state["refs_to_process"]
-            db_results = {}  # Necesitamos obtener esto del contexto o pasarlo como parámetro
-            if hasattr(self.controller, "chat_manager"):
-                db_results = self.controller.chat_manager.step_context.get("db_results", {})
+            # Preparar resultado
+            result = {
+                "processed": [processed_info],
+                "errors": errors
+            }
             
-            return self.create_folders_and_copy_files(formatted_refs, db_results)
+            # Incrementar el índice actual
+            current_state["current_index"] = current_state.get("current_index", 0) + 1
+            
+            return result
             
         except Exception as e:
-            error_msg = f"Error completando creación de carpetas: {str(e)}"
-            logger.error(f"✗ {error_msg}")
-            
-            if current_state:
-                current_state["errors"].append(error_msg)
-                current_state["current_index"] += 1
-                
-                # Continuar con la siguiente referencia a pesar del error
-                formatted_refs = current_state["refs_to_process"]
-                db_results = {}
-                if hasattr(self.controller, "chat_manager"):
-                    db_results = self.controller.chat_manager.step_context.get("db_results", {})
-                
-                return self.create_folders_and_copy_files(formatted_refs, db_results)
-            else:
-                return {
-                    "errors": [error_msg],
-                    "processing_complete": True
-                }
-        finally:
-            logger.info("=== FIN COMPLETANDO CREACIÓN DE CARPETAS ===")
+            error_msg = f"Error completando la creación de carpeta: {str(e)}"
+            logger.error(error_msg)
+            return {
+                "processed": [],
+                "errors": [error_msg]
+            }
 
     def _sanitize_folder_name(self, name: str) -> str:
         """
@@ -1137,8 +1175,20 @@ class ReferenceFolderCreationManager:
         finally:
             logger.info("=== FIN BÚSQUEDA DE ARCHIVO RHINO ===")
 
-    def _copy_files(self, source_folder: str, target_folder: Path) -> Dict:
-        logger.info("=== INICIO BÚSQUEDA DE ARCHIVOS ===")
+    def _copy_files(self, source_folder: str, target_folder: Optional[Path]) -> Dict:
+        """
+        Busca y copia los archivos necesarios desde la carpeta origen a la carpeta destino.
+        Los archivos se copian en el directorio destino y no se duplican si ya existen.
+        
+        Args:
+            source_folder: Ruta de la carpeta origen
+            target_folder: Ruta de la carpeta destino (será el directorio padre de la referencia).
+                         Si es None, solo busca los archivos sin copiarlos.
+            
+        Returns:
+            Dict con información de los archivos encontrados y copiados
+        """
+        logger.info("=== INICIO BÚSQUEDA Y COPIA DE ARCHIVOS ===")
         logger.info(f"Origen: {source_folder}")
         logger.info(f"Destino: {target_folder}")
         
@@ -1200,55 +1250,67 @@ class ReferenceFolderCreationManager:
                                 priority = 4
                                 
                             pdf_candidates.append((full_path, priority))
+                            logger.info(f"PDF encontrado: {full_path} (prioridad: {priority})")
             
+            # Ordenar candidatos por prioridad y seleccionar el mejor
             if pdf_candidates:
-                # Ordenar por prioridad (menor número = mayor prioridad)
-                pdf_candidates.sort(key=lambda x: x[1])
+                pdf_candidates.sort(key=lambda x: x[1])  # Ordenar por prioridad (menor número = mayor prioridad)
                 selected_pdf = pdf_candidates[0][0]
-                is_instructivo = pdf_candidates[0][1] <= 3  # Prioridades 1, 2 y 3 son instructivos
+                result["pdf"] = selected_pdf
                 
-                logger.info(f"✓ PDF {'de instructivo ' if is_instructivo else ''}seleccionado: {selected_pdf}")
-                
-                # Guardar información del PDF para copiarlo después
-                result["pdf"] = {
-                    "source": selected_pdf,
-                    "filename": os.path.basename(selected_pdf).upper(),
-                    "is_instructivo": is_instructivo
-                }
-                logger.info("✓ PDF identificado exitosamente")
+                # Si se proporcionó una carpeta destino, copiar el PDF
+                if target_folder is not None:
+                    pdf_name = os.path.basename(selected_pdf)
+                    pdf_target = target_folder / pdf_name
+                    
+                    # Verificar si el archivo ya existe
+                    if not pdf_target.exists():
+                        shutil.copy2(selected_pdf, pdf_target)
+                        logger.info(f"✓ PDF copiado: {pdf_name}")
+                    else:
+                        logger.info(f"✓ PDF ya existe en el directorio padre: {pdf_name}")
             else:
                 logger.warning("✗ No se encontraron archivos PDF")
+                result["errors"].append("No se encontraron archivos PDF")
             
-            # 2) Buscar archivo Rhino
-            rhino_files = self._find_rhino_file(source_folder)
-            if rhino_files:
-                if len(rhino_files) == 1:
-                    # Si solo hay un archivo, guardarlo para copiarlo después
-                    rhino_file = rhino_files[0]
-                    result["rhino"] = {
-                        "source": rhino_file,
-                        "filename": os.path.basename(rhino_file).upper()
-                    }
-                    logger.info("✓ Archivo Rhino único identificado")
-                else:
-                    # Si hay múltiples archivos, esperar selección del usuario
-                    logger.info(f"Encontrados {len(rhino_files)} archivos Rhino alternativos")
-                    result["waiting_for_rhino"] = True
-                    result["rhino_alternatives"] = rhino_files
+            # 2) Buscar archivos Rhino (sin copiar, solo para alternativas)
+            rhino_files = []
+            for root, _, files in os.walk(source_folder):
+                for file in files:
+                    if file.lower().endswith('.3dm'):
+                        full_path = os.path.join(root, file)
+                        rhino_files.append(full_path)
+                        logger.info(f"Archivo Rhino encontrado: {full_path}")
+            
+            if len(rhino_files) > 1:
+                result["waiting_for_rhino"] = True
+                result["rhino_alternatives"] = rhino_files
+                logger.info(f"Múltiples archivos Rhino encontrados: {len(rhino_files)}")
+            elif len(rhino_files) == 1:
+                result["rhino"] = rhino_files[0]
+                # Si se proporcionó una carpeta destino, copiar el archivo Rhino
+                if target_folder is not None:
+                    rhino_name = os.path.basename(rhino_files[0])
+                    rhino_target = target_folder / rhino_name
+                    
+                    if not rhino_target.exists():
+                        shutil.copy2(rhino_files[0], rhino_target)
+                        logger.info(f"✓ Archivo Rhino único copiado: {rhino_name}")
+                    else:
+                        logger.info(f"✓ Archivo Rhino ya existe en el directorio padre: {rhino_name}")
             else:
-                # No se encontró ningún archivo Rhino
                 logger.warning("✗ No se encontraron archivos Rhino")
                 result["errors"].append("No se encontraron archivos Rhino")
             
             return result
             
         except Exception as e:
-            error_msg = f"Error buscando archivos: {str(e)}"
+            error_msg = f"Error buscando y copiando archivos: {str(e)}"
             logger.error(f"✗ {error_msg}")
             result["errors"].append(error_msg)
             return result
         finally:
-            logger.info("=== FIN BÚSQUEDA DE ARCHIVOS ===")
+            logger.info("=== FIN BÚSQUEDA Y COPIA DE ARCHIVOS ===")
 
     def copy_selected_files(self, files_info: Dict, target_folder: Path) -> Dict:
         """
@@ -1344,4 +1406,74 @@ class ReferenceFolderCreationManager:
     def _report_progress(self, message: str):
         """Reporta progreso si hay un callback configurado"""
         if self._progress_callback:
-            self._progress_callback(message) 
+            self._progress_callback(message)
+
+    def prepare_folder_creation(self, ref_data: Dict) -> Dict:
+        """
+        Prepara la carpeta y busca los archivos necesarios para una referencia.
+        
+        Args:
+            ref_data: Diccionario con la información de la referencia
+            
+        Returns:
+            Dict con la información de la carpeta y archivos encontrados
+        """
+        logger.info(f"Preparando creación de carpeta para {ref_data['original']}")
+        
+        try:
+            # Obtener información necesaria
+            reference = ref_data['original']
+            nombre_formateado = ref_data['nombre_formateado']
+            category = ref_data.get('category', '')
+            
+            # Verificar que tenemos los resultados de la BD
+            if not hasattr(self, '_processing_state') or 'db_results' not in self._processing_state:
+                raise ValueError("No se encontraron resultados de la base de datos en el estado")
+                
+            db_results = self._processing_state['db_results']
+            if reference not in db_results:
+                raise ValueError(f"No se encontraron rutas en la base de datos para {reference}")
+                
+            # Buscar la carpeta preferida usando las rutas de la BD
+            source_paths = db_results[reference]
+            source_folder = None
+            
+            # Primero buscar una carpeta que contenga "instructivo"
+            for path in source_paths:
+                if 'instructivo' in path.lower():
+                    source_folder = path
+                    logger.info(f"Encontrada carpeta con instructivo: {path}")
+                    break
+                    
+            # Si no hay carpeta con instructivo, usar la primera ruta
+            if not source_folder and source_paths:
+                source_folder = source_paths[0]
+                logger.info(f"Usando primera ruta disponible: {source_folder}")
+                
+            if not source_folder:
+                raise ValueError(f"No se encontró carpeta fuente para {reference}")
+                
+            # Crear estructura de carpetas
+            target_folder = self._create_folder_structure(
+                reference_name=nombre_formateado,
+                category=category,
+                source_path=source_folder
+            )
+            
+            # Buscar archivos Rhino
+            rhino_alternatives = self._find_rhino_file(source_folder)
+            
+            # Preparar resultado
+            result = {
+                "original": reference,
+                "nombre_formateado": nombre_formateado,
+                "source_folder": source_folder,
+                "target_folder": str(target_folder),
+                "rhino_alternatives": rhino_alternatives if rhino_alternatives else []
+            }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error preparando carpeta para {ref_data['original']}: {str(e)}")
+            raise 
