@@ -223,16 +223,28 @@ class LLMManager:
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            logger.info(f"\n=== INICIO PROMPT [{operation}] ===")
+            # Determinar el tipo de operación para el resumen
+            operation_type = ""
+            if "format_reference" in operation:
+                operation_type = "Formateo de nombre de referencia"
+            elif "verify_references" in operation:
+                operation_type = "Verificación de referencias"
+            elif "decision_verificar_referencias" in operation:
+                operation_type = "Decisión sobre verificación de referencias"
+            elif "decision_confirmar_nombres" in operation:
+                operation_type = "Decisión sobre confirmación de nombres"
+            elif "decision_crear_carpetas" in operation:
+                operation_type = "Decisión sobre creación de carpetas"
+            else:
+                operation_type = "Operación general"
+            
+            logger.info(f"=== INICIO PROMPT [{operation}] ===")
             logger.info(f"Timestamp: {timestamp}")
+            logger.info(f"Tipo de operación: {operation_type}")
             logger.info(f"Temperatura: {temperature}")
             if max_tokens:
                 logger.info(f"Max tokens: {max_tokens}")
-            logger.info("Mensajes:")
-            for msg in messages:
-                logger.info(f"  Role: {msg['role']}")
-                logger.info(f"  Content:\n{msg['content']}\n")
-            logger.info(f"=== FIN PROMPT [{operation}] ===\n")
+            logger.info("=== FIN PROMPT ===\n")
             
         except Exception as log_e:
             logger.error(f"Error al registrar prompt: {str(log_e)}")
@@ -594,7 +606,7 @@ Descripción: {description}
 Devuelve SOLO el texto formateado, sin explicaciones."""
 
         try:
-            logger.info(f"Formateando referencia: {code} {number}")
+            logger.info(f"Formateando referencia: {code} {number}\n")
             
             messages = [{
                 "role": "user",

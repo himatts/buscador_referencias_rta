@@ -94,7 +94,7 @@ class ReferenceFolderCreationManager:
             "\\\\192.168.200.250\\rtadiseño\\MERCADEO.3\\ANIMACIONES"
         ]
         
-        logger.info("ReferenceFolderCreationManager inicializado correctamente")
+        logger.info("ReferenceFolderCreationManager inicializado correctamente\n")
 
     def fetch_and_format_with_sheets(self, references: List[str]) -> List[dict]:
         """
@@ -132,7 +132,7 @@ class ReferenceFolderCreationManager:
             logger.info(f"Datos obtenidos: {len(all_values)} filas")
             
             for ref in references:
-                logger.info(f"\nProcesando referencia: {ref}")
+                logger.info(f"Procesando referencia: {ref}")
                 try:
                     numeric_match = re.search(r"\d{3,5}", ref)
                     if not numeric_match:
@@ -199,7 +199,7 @@ class ReferenceFolderCreationManager:
                         'error': str(e)
                     })
             
-            logger.info("=== FIN BÚSQUEDA EN GOOGLE SHEETS ===")
+            logger.info("=== FIN BÚSQUEDA EN GOOGLE SHEETS ===\n")
             return formatted_refs
             
         except Exception as e:
@@ -280,7 +280,7 @@ class ReferenceFolderCreationManager:
                 logger.warning(f"No se pudo encontrar carpeta preferida: {str(e)}")
                 # Fallback: usar la primera ruta disponible de los resultados guardados
                 source_folder = current_state["db_results"][original_ref][0]
-                logger.info(f"Usando primera ruta disponible: {source_folder}")
+                logger.info(f"Usando primera ruta disponible: {source_folder}\n")
             
             # Buscar archivos sin copiarlos
             files_info = self._copy_files(source_folder, None)
@@ -391,7 +391,7 @@ class ReferenceFolderCreationManager:
             errors = []
             
             # Primero buscar y copiar el PDF
-            logger.info("Buscando y copiando archivos PDF...")
+            logger.info("Buscando y copiando archivos PDF...\n")
             copy_result = self._copy_files(source_folder, parent_folder)
             
             # Si hay un PDF encontrado, agregarlo al resultado
@@ -569,7 +569,7 @@ class ReferenceFolderCreationManager:
                         current_folder.mkdir(parents=True, exist_ok=True)
                         logger.debug(f"Creada carpeta: {safe_part}")
                 
-                logger.info(f"Estructura de carpetas creada exitosamente: {current_folder}")
+                logger.info(f"Estructura de carpetas creada exitosamente: {current_folder}\n")
                 return current_folder
                 
             except Exception as e:
@@ -828,17 +828,12 @@ class ReferenceFolderCreationManager:
                 logger.error(error_msg)
                 raise ValueError(error_msg)
             
-            # Mostrar todas las rutas encontradas para debugging
-            logger.info(f"Rutas encontradas para {extracted_ref}:")
-            for i, path in enumerate(paths):
-                logger.info(f"{i+1}. {path[0]}")
-            
             # Tomar el primer resultado (ya ordenado por preferencia)
             chosen_path = paths[0][0]
             
             # Verificar si es una carpeta de instructivo
             is_instructivo = "instructivo" in chosen_path.lower()
-            log_msg = f"Carpeta seleccionada: {chosen_path}"
+            log_msg = f"Carpeta seleccionada: {chosen_path}Carpeta seleccionada:\n"
             if is_instructivo:
                 log_msg += " (contiene 'Instructivo')"
             logger.info(log_msg)
@@ -915,24 +910,13 @@ class ReferenceFolderCreationManager:
                     'depth': len(os.path.relpath(full_path, start_path).split(os.sep))
                 }
                 
-                # Registrar información detallada
-                logger.info(f"Carpeta encontrada: {full_path}")
-                logger.info(f"  Nombre: {dir_name}")
-                logger.info(f"  Es EDITABLE: {path_info['is_editable']}")
-                logger.info(f"  Es NUBE: {path_info['is_nube']}")
-                logger.info(f"  Ruta relativa: {path_info['relative_to_start']}")
-                logger.info(f"  Profundidad: {path_info['depth']}")
-                
                 paths_info.append(path_info)
             
             # Ordenar las rutas por profundidad para mejor visualización
             paths_info.sort(key=lambda x: (x['depth'], x['path']))
             
-            # Registrar resumen
+            # Registrar solo el total de rutas encontradas
             logger.info(f"Total de rutas encontradas: {len(paths_info)}")
-            logger.info("Resumen de rutas:")
-            for path_info in paths_info:
-                logger.info(f"- {path_info['path']}")
             
             return paths_info
             
@@ -957,15 +941,13 @@ class ReferenceFolderCreationManager:
             retornará '//192.168.200.250/cocina/Mueble Alacena Fenix'
         """
         logger.info(f"=== INICIO BÚSQUEDA DE CARPETA BASE ===")
-        logger.info(f"Carpeta origen: {source_folder}")
+        logger.info(f"Analizando ruta: {source_folder}")
 
         # Normaliza barras para evitar problemas
         current_path = os.path.normpath(source_folder)
-        logger.info(f"Ruta normalizada: {current_path}")
 
         while True:
-            parent_path = os.path.normpath(os.path.dirname(current_path)) # Obtiene el padre de la ruta actual
-            logger.info(f"Analizando padre: {parent_path}")
+            parent_path = os.path.normpath(os.path.dirname(current_path))
             
             # Si llegamos a la raíz o no podemos subir más
             if not parent_path or parent_path == current_path:
@@ -975,7 +957,7 @@ class ReferenceFolderCreationManager:
             # Si el padre es una ruta raíz, retornamos la carpeta actual
             if self._is_one_of_my_roots(parent_path):
                 logger.info(f"✓ Carpeta base encontrada: {current_path}")
-                logger.info(f"=== FIN BÚSQUEDA DE CARPETA BASE ===")
+                logger.info(f"=== FIN BÚSQUEDA DE CARPETA BASE ===\n")
                 return current_path
 
             # Guardamos la ruta actual antes de subir
@@ -986,8 +968,8 @@ class ReferenceFolderCreationManager:
             if current_path == previous_path:
                 logger.warning(f"✗ No se pudo subir más en la jerarquía")
                 return current_path
-                
-        logger.info(f"=== FIN BÚSQUEDA DE CARPETA BASE ===")
+
+        logger.info(f"=== FIN BÚSQUEDA DE CARPETA BASE ===\n")
 
     def _is_one_of_my_roots(self, path: str) -> bool:
         """
@@ -1001,16 +983,11 @@ class ReferenceFolderCreationManager:
         """
         # Ajusta las barras y minúsculas para comparación consistente
         norm_path = os.path.normpath(path).lower().rstrip('\\')
-        logger.info(f"Verificando si '{path}' es una ruta raíz")
-        logger.info(f"Ruta normalizada: '{norm_path}'")
         
         for root in self.root_paths:
             norm_root = os.path.normpath(root).lower().rstrip('\\')
-            logger.info(f"Comparando con raíz: '{norm_root}'")
-            
-            # Verificamos coincidencia exacta
             if norm_path == norm_root:
-                logger.info(f"✓ Coincidencia encontrada: {path} es una ruta raíz")
+                logger.info(f"✓ {path} es una ruta raíz")
                 return True
                 
         logger.info(f"✗ {path} no es una ruta raíz")
@@ -1129,7 +1106,7 @@ class ReferenceFolderCreationManager:
                 logger.info(f"No se encontró carpeta EDITABLES en: {current_dir}")
             
             # 2) Si no se encontró en EDITABLES actual, buscar en la carpeta base del proyecto
-            logger.info("No se encontró en EDITABLES actual, buscando en carpeta base...")
+            logger.info("No se encontró en EDITABLES actual, buscando en carpeta base...\n")
             
             base_path = self._find_base_folder(source_folder)
             if not base_path or not os.path.exists(base_path):
@@ -1173,7 +1150,7 @@ class ReferenceFolderCreationManager:
             logger.error(f"✗ Error en búsqueda: {str(e)}")
             return None
         finally:
-            logger.info("=== FIN BÚSQUEDA DE ARCHIVO RHINO ===")
+            logger.info("=== FIN BÚSQUEDA DE ARCHIVO RHINO ===\n")
 
     def _copy_files(self, source_folder: str, target_folder: Optional[Path]) -> Dict:
         """
@@ -1310,7 +1287,7 @@ class ReferenceFolderCreationManager:
             result["errors"].append(error_msg)
             return result
         finally:
-            logger.info("=== FIN BÚSQUEDA Y COPIA DE ARCHIVOS ===")
+            logger.info("=== FIN BÚSQUEDA Y COPIA DE ARCHIVOS ===\n")
 
     def copy_selected_files(self, files_info: Dict, target_folder: Path) -> Dict:
         """
@@ -1442,13 +1419,13 @@ class ReferenceFolderCreationManager:
             for path in source_paths:
                 if 'instructivo' in path.lower():
                     source_folder = path
-                    logger.info(f"Encontrada carpeta con instructivo: {path}")
+                    logger.info(f"Encontrada carpeta con instructivo: {path}\n")
                     break
                     
             # Si no hay carpeta con instructivo, usar la primera ruta
             if not source_folder and source_paths:
                 source_folder = source_paths[0]
-                logger.info(f"Usando primera ruta disponible: {source_folder}")
+                logger.info(f"Usando primera ruta disponible: {source_folder}\n")
                 
             if not source_folder:
                 raise ValueError(f"No se encontró carpeta fuente para {reference}")

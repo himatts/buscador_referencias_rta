@@ -12,6 +12,15 @@ def resource_path(relative_path):
         base_path = os.path.abspath(os.path.dirname(__file__))
     return os.path.join(base_path, relative_path)
 
+def reset_log_file():
+    """Limpia el archivo de logs al inicio del programa."""
+    log_file = 'llm_prompts.log'
+    try:
+        with open(log_file, 'w', encoding='utf-8') as f:
+            f.write('')  # Sobrescribe el archivo con contenido vacío
+    except Exception as e:
+        print(f"Error al limpiar archivo de logs: {e}")
+
 # Agregar los directorios al path
 if getattr(sys, 'frozen', False):
     # Estamos ejecutando en modo PyInstaller
@@ -28,6 +37,7 @@ from utils.database import initialize_db
 
 def main():
     """Función principal que inicia la aplicación."""
+    reset_log_file()  # Limpiar logs al inicio
     initialize_db()
     app = QApplication(sys.argv)
     splash = SplashScreen()
