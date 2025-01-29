@@ -10,7 +10,7 @@ Versión: 1.0
 import json
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QFileDialog, QMessageBox, QGroupBox
+    QPushButton, QFileDialog, QMessageBox, QGroupBox, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt
 from utils.config import Config
@@ -24,9 +24,9 @@ class ConfigDialog(QDialog):
         """Inicializa el diálogo de configuración."""
         super().__init__(parent)
         self.config = Config()
-        self.initUI()
+        self.init_ui()
         
-    def initUI(self):
+    def init_ui(self):
         """Configura la interfaz del diálogo."""
         self.setWindowTitle("Configuración")
         self.setMinimumWidth(500)
@@ -73,16 +73,39 @@ class ConfigDialog(QDialog):
         general_group.setLayout(general_layout)
         layout.addWidget(general_group)
         
-        # 3. Botones de acción
-        button_layout = QHBoxLayout()
-        save_button = QPushButton("Guardar")
-        save_button.clicked.connect(self.save_config)
-        cancel_button = QPushButton("Cancelar")
-        cancel_button.clicked.connect(self.reject)
+        # 3. Grupo de credenciales web
+        web_group = QGroupBox("Credenciales Web")
+        web_layout = QVBoxLayout()
         
-        button_layout.addWidget(save_button)
-        button_layout.addWidget(cancel_button)
-        layout.addLayout(button_layout)
+        # Campo para email
+        email_layout = QHBoxLayout()
+        email_label = QLabel("Email:")
+        self.email_input = QLineEdit()
+        self.email_input.setText(self.config.get_web_email())
+        email_layout.addWidget(email_label)
+        email_layout.addWidget(self.email_input)
+        web_layout.addLayout(email_layout)
+        
+        # Campo para contraseña
+        password_layout = QHBoxLayout()
+        password_label = QLabel("Contraseña:")
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.password_input.setText(self.config.get_web_password())
+        password_layout.addWidget(password_label)
+        password_layout.addWidget(self.password_input)
+        web_layout.addLayout(password_layout)
+        
+        web_group.setLayout(web_layout)
+        layout.addWidget(web_group)
+        
+        # 4. Botones de acción
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
         
         self.setLayout(layout)
     
@@ -132,24 +155,17 @@ class ConfigDialog(QDialog):
                     f"Error al procesar el archivo de credenciales:\n{str(e)}"
                 )
     
-    def save_config(self):
-        """Guarda la configuración."""
-        try:
-            # Validar y guardar nombre de carpeta
-            folder_name = self.folder_name_input.text().strip()
-            if folder_name:
-                self.config.set_desktop_folder_name(folder_name)
-            
-            QMessageBox.information(
-                self,
-                "Éxito",
-                "Configuración guardada correctamente."
-            )
-            self.accept()
-            
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Error al guardar la configuración:\n{str(e)}"
-            ) 
+    def accept(self):
+        """Guarda la configuración y cierra el diálogo."""
+        # Guardar nombre de carpeta de escritorio
+        desktop_folder_name = self.folder_name_input.text().strip()
+        if desktop_folder_name:
+            self.config.set_desktop_folder_name(desktop_folder_name)
+
+        # Guardar credenciales web
+        email = self.email_input.text().strip()
+        password = self.password_input.text()
+        if email and password:
+            self.config.set_web_credentials(email, password)
+
+        super().accept() 

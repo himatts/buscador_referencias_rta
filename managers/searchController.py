@@ -50,19 +50,27 @@ class SearchController:
         main_window = self.main_controller.main_window
         
         # Obtener las referencias a buscar
-        text_lines = [
-            main_window.entry.item(i, 0).text().strip() 
-            for i in range(main_window.entry.rowCount()) 
-            if main_window.entry.item(i, 0) and main_window.entry.item(i, 0).text().strip()
-        ]
-        
+        text_lines = []
+        for row in range(main_window.entry.rowCount()):
+            item = main_window.entry.item(row, 0)
+            if item and item.text().strip():
+                text_lines.append(item.text().strip())
+                
         if not text_lines:
-            main_window.status_label.setText("Por favor, ingrese referencias para buscar.")
+            main_window.status_label.setText("Por favor, ingresa al menos una referencia.")
+            return
+            
+        # Actualizar el conjunto de referencias buscadas
+        self.main_controller.searched_refs = set(text_lines)
+            
+        # Obtener las rutas seleccionadas
+        paths = self.main_controller.paths_manager.get_paths()
+        if not paths:
+            main_window.status_label.setText("Por favor, selecciona una ruta primero.")
             return
             
         # Preparar el hilo de búsqueda
         text_lines_indices = {line: i for i, line in enumerate(text_lines)}
-        paths = self.main_controller.paths_manager.get_paths()
         file_types = self.main_controller.paths_manager.get_selected_file_types()
         
         self.search_thread = SearchThread(

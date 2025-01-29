@@ -599,8 +599,19 @@ class ChatPanel(QWidget):
             self.typing_label.setText("")
 
     def update_cost(self, cost: float):
-        """Actualiza el costo de interacción mostrado (opcional)."""
-        self.cost_label.setText(f"Costo de la interacción: ${cost:.4f}")
+        """
+        Actualiza el costo de interacción mostrado.
+        
+        Args:
+            cost: Costo total acumulado en dólares
+        """
+        try:
+            self.cost_label.setText(f"Costo de la interacción: ${cost:.4f}")
+            # Forzar actualización visual
+            self.cost_label.repaint()
+            
+        except Exception as e:
+            logger.error(f"Error al actualizar costo: {str(e)}")
 
     def _update_typing_animation(self):
         """Actualiza la animación de los puntos suspensivos para 'escribiendo...'."""
@@ -632,16 +643,19 @@ class ChatPanel(QWidget):
             input_tokens: Total de tokens de entrada acumulados
             output_tokens: Total de tokens de salida acumulados
         """
-        # Actualizar los totales
-        self.input_tokens = input_tokens
-        self.output_tokens = output_tokens
-        
-        # Formatear números con separadores de miles
-        formatted_input = f"{input_tokens:,}".replace(",", ".")
-        formatted_output = f"{output_tokens:,}".replace(",", ".")
-        total_tokens = f"{(input_tokens + output_tokens):,}".replace(",", ".")
-        
-        # Actualizar el label con el formato: "Tokens totales: X.XXX (Entrada: Y.YYY | Salida: Z.ZZZ)"
-        self.tokens_label.setText(
-            f"Tokens totales: {total_tokens} (Entrada: {formatted_input} | Salida: {formatted_output})"
-        )
+        try:
+            # Formatear números con separadores de miles
+            formatted_input = f"{input_tokens:,}".replace(",", ".")
+            formatted_output = f"{output_tokens:,}".replace(",", ".")
+            total_tokens = f"{(input_tokens + output_tokens):,}".replace(",", ".")
+            
+            # Actualizar el label con el formato: "Tokens totales: X.XXX (Entrada: Y.YYY | Salida: Z.ZZZ)"
+            self.tokens_label.setText(
+                f"Tokens totales: {total_tokens} (Entrada: {formatted_input} | Salida: {formatted_output})"
+            )
+            
+            # Forzar actualización visual
+            self.tokens_label.repaint()
+            
+        except Exception as e:
+            logger.error(f"Error al actualizar tokens: {str(e)}")

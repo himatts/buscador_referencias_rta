@@ -65,6 +65,7 @@ class ChatManager(QObject):
     ESTADO_SELECCIONAR_RHINO = "seleccionar_rhino"
     ESTADO_ERROR = "error"
     ESTADO_FINALIZADO = "finalizado"
+    ESTADO_DESCARGA_HOJAS = "descarga_hojas"
     
     # Señales para comunicación con la interfaz
     llm_response = pyqtSignal(str, str, bool)  # sender, message, is_error
@@ -80,13 +81,26 @@ class ChatManager(QObject):
         """
         super().__init__()
         self.controller = controller
+        
+        # Inicializar LLMManager
         self.llm_manager = LLMManager()
+        
+        # Conectar señales del LLMManager
+        logger.info("Conectando señales del LLMManager...")
+        self.llm_manager.tokens_updated.connect(self._update_tokens_display)
+        self.llm_manager.cost_updated.connect(self._update_cost_display)
+        logger.info("Señales conectadas correctamente")
+        
+        # Inicializar otros atributos
         self.current_references = []
         self.conversation_history = []
         self.current_step = self.ESTADO_INICIAL
         self.step_context = {}
         self.error_recovery_attempts = {}
-        self.pending_rhino_selection = None  # Para almacenar la referencia pendiente de selección de Rhino
+        self.pending_rhino_selection = None
+        self.web_scraping_thread = None
+        
+        logger.info("ChatManager inicializado correctamente")
         
     def _handle_error(self, error: Exception) -> str:
         """
@@ -183,7 +197,13 @@ class ChatManager(QObject):
                 self.ESTADO_SELECCIONAR_RHINO,
                 self.ESTADO_FINALIZADO
             ],
-            self.ESTADO_FINALIZADO: []
+            self.ESTADO_FINALIZADO: [
+                self.ESTADO_DESCARGA_HOJAS  # Permitir transición a descarga de hojas
+            ],
+            self.ESTADO_DESCARGA_HOJAS: [
+                self.ESTADO_FINALIZADO,
+                self.ESTADO_ERROR
+            ]
         }
         
         return next_step in valid_transitions.get(current_step, [])
@@ -224,10 +244,15 @@ class ChatManager(QObject):
             self.conversation_history = []
             self.error_recovery_attempts = {}
             
-            # Reiniciar contadores de tokens
+            # Reiniciar contadores de tokens y costos
+            logger.info("Reiniciando contadores de tokens y costos...")
             self.llm_manager.total_input_tokens = 0
             self.llm_manager.total_output_tokens = 0
-            self.controller.main_window.chat_panel.update_tokens(0, 0)
+            self.llm_manager.session_cost = 0.0
+            
+            # Forzar actualización de la UI con valores iniciales
+            self._update_tokens_display(0, 0)
+            self._update_cost_display(0.0)
             
             # Mensaje inicial del sistema
             welcome_message = (
@@ -268,8 +293,12 @@ class ChatManager(QObject):
             self._transition_to_step(self.ESTADO_ERROR)
 
     def _process_folder_results(self, results: Dict):
-        """Procesa los resultados finales de la creación de carpetas"""
+        """Procesa los resultados de la creación de carpetas."""
         try:
+            # Guardar los resultados en el contexto
+            if results.get("processed"):
+                self.step_context['processed'] = results["processed"]
+
             # Actualizar nombres en la tabla si hay referencias formateadas
             if results.get("formatted_refs"):
                 entry = self.controller.main_window.entry
@@ -305,9 +334,11 @@ class ChatManager(QObject):
                 self.process_single_reference()
                 return
                 
-            # Solo si no hay pendientes, mostrar el resumen final
+            # Solo si hay referencias procesadas correctamente
             if results.get("processed"):
                 self._show_final_summary(results)
+                # Mostrar botón para descargar hojas de diseño
+                self._show_download_option()
                 self._transition_to_step(self.ESTADO_FINALIZADO)
             else:
                 self.llm_response.emit(
@@ -332,11 +363,66 @@ class ChatManager(QObject):
             self.folder_creation_thread.stop()
             self.folder_creation_thread.wait()
 
-    def _update_tokens_display(self):
-        """Actualiza la visualización de tokens en la interfaz."""
-        input_tokens, output_tokens = self.llm_manager.get_token_counts()
-        self.controller.main_window.chat_panel.update_tokens(input_tokens, output_tokens)
-        logger.info(f"Tokens actualizados - Entrada: {input_tokens}, Salida: {output_tokens}")
+    def _update_tokens_display(self, input_tokens: int, output_tokens: int):
+        """
+        Actualiza la UI con los nuevos valores de tokens.
+        
+        Args:
+            input_tokens: Total de tokens de entrada
+            output_tokens: Total de tokens de salida
+        """
+        try:
+            logger.info(f"ChatManager: Recibida señal de actualización de tokens - Entrada: {input_tokens}, Salida: {output_tokens}")
+            
+            if not hasattr(self, 'controller'):
+                logger.error("No hay controlador disponible")
+                return
+                
+            if not hasattr(self.controller, 'main_window'):
+                logger.error("No hay main_window disponible")
+                return
+                
+            if not hasattr(self.controller.main_window, 'chat_panel'):
+                logger.error("No hay chat_panel disponible")
+                return
+            
+            # Actualizar la UI
+            self.controller.main_window.chat_panel.update_tokens(input_tokens, output_tokens)
+            logger.info("Tokens actualizados correctamente en la UI")
+            
+        except Exception as e:
+            logger.error(f"Error al actualizar display de tokens: {str(e)}")
+            logger.exception(e)  # Esto imprimirá el stack trace completo
+        
+    def _update_cost_display(self, cost: float):
+        """
+        Actualiza la UI con el nuevo costo.
+        
+        Args:
+            cost: Costo total acumulado
+        """
+        try:
+            logger.info(f"ChatManager: Recibida señal de actualización de costo - ${cost:.4f}")
+            
+            if not hasattr(self, 'controller'):
+                logger.error("No hay controlador disponible")
+                return
+                
+            if not hasattr(self.controller, 'main_window'):
+                logger.error("No hay main_window disponible")
+                return
+                
+            if not hasattr(self.controller.main_window, 'chat_panel'):
+                logger.error("No hay chat_panel disponible")
+                return
+            
+            # Actualizar la UI
+            self.controller.main_window.chat_panel.update_cost(cost)
+            logger.info("Costo actualizado correctamente en la UI")
+            
+        except Exception as e:
+            logger.error(f"Error al actualizar display de costo: {str(e)}")
+            logger.exception(e)  # Esto imprimirá el stack trace completo
 
     def handle_user_message(self, message: str):
         """
@@ -375,27 +461,27 @@ class ChatManager(QObject):
                             # Marcar que ya no estamos esperando selección
                             self.step_context["waiting_for_rhino"] = False
                         
-                        # Notificar al usuario
-                        self.llm_response.emit(
-                            "Sistema",
-                            f"✅ Archivo Rhino {rhino_name} copiado exitosamente a la carpeta destino.",
-                            False
-                        )
-                        
-                        # Continuar con el siguiente paso
-                        self.process_next_step()
+                            # Notificar al usuario
+                            self.llm_response.emit(
+                                "Sistema",
+                                f"✅ Archivo Rhino {rhino_name} copiado exitosamente a la carpeta destino.",
+                                False
+                            )
+                            
+                            # Continuar con el siguiente paso
+                            self.process_next_step()
+                        else:
+                            self.llm_response.emit(
+                                "Sistema",
+                                "❌ Error: No se pudo copiar el archivo porque no se encontró la carpeta destino.",
+                                True
+                            )
                     else:
                         self.llm_response.emit(
                             "Sistema",
-                            "❌ Error: No se pudo copiar el archivo porque no se encontró la carpeta destino.",
+                            "❌ Error: El archivo seleccionado no existe o no es accesible.",
                             True
                         )
-                else:
-                    self.llm_response.emit(
-                        "Sistema",
-                        "❌ Error: El archivo seleccionado no existe o no es accesible.",
-                        True
-                    )
                 return
 
             # Guardar el mensaje en el historial
@@ -410,12 +496,6 @@ class ChatManager(QObject):
                     self.current_step,
                     self.step_context,
                     message
-                )
-                
-                # Actualizar tokens y costo en la UI
-                self._update_tokens_display()
-                self.controller.main_window.chat_panel.update_cost(
-                    self.llm_manager.get_session_cost()
                 )
                 
                 # Analizar la respuesta y tomar acción
@@ -450,10 +530,8 @@ class ChatManager(QObject):
                 self.typing_status_changed.emit(False)
                 
         except Exception as e:
-            error_msg = self._handle_error(e)
-            self.llm_response.emit("Sistema", error_msg, True)
-            self.error_occurred.emit(self.current_step, str(e))
-            self._transition_to_step(self.ESTADO_ERROR)
+            logger.error(f"Error en handle_user_message: {str(e)}")
+            self.error_occurred.emit("mensaje_usuario", str(e))
 
     def process_single_reference(self):
         """
@@ -708,7 +786,7 @@ class ChatManager(QObject):
             self.folder_creation_thread.error.connect(
                 lambda msg: self.llm_response.emit("Sistema", msg, True)
             )
-            self.folder_creation_thread.finished.connect(self._show_final_summary)
+            self.folder_creation_thread.finished.connect(self._process_folder_results)
             self.folder_creation_thread.rhinoSelectionRequired.connect(self._handle_rhino_selection_required)
             
             # Iniciar el hilo
@@ -885,3 +963,104 @@ class ChatManager(QObject):
             self.llm_response.emit("Sistema", error_msg, True)
             self.error_occurred.emit("formateo", str(e))
             self._transition_to_step(self.ESTADO_ERROR) 
+
+    def _show_download_option(self):
+        """Muestra el botón para descargar hojas de diseño."""
+        actions = [
+            {
+                'text': 'Descargar Hojas de Diseño',
+                'callback': self._start_web_scraping
+            }
+        ]
+        self.controller.main_window.chat_panel.show_action_buttons(actions)
+
+    def _start_web_scraping(self):
+        """Inicia el proceso de web scraping."""
+        try:
+            # Verificar credenciales web
+            if not self.controller.config.get_web_email() or not self.controller.config.get_web_password():
+                self.llm_response.emit(
+                    "Sistema",
+                    "Por favor, configura tus credenciales web en la configuración antes de continuar.",
+                    True
+                )
+                return
+
+            # Obtener referencias procesadas y sus carpetas destino
+            processed_refs = []
+            target_folders = {}
+            
+            # Obtener las referencias procesadas del contexto
+            for ref in self.step_context.get('formatted_refs', []):
+                if not ref.get('error'):
+                    processed_refs.append(ref['original'])
+                    # Buscar la carpeta destino en los resultados del procesamiento
+                    for result in self.step_context.get('processed', []):
+                        if result['original'] == ref['original']:
+                            target_folders[ref['original']] = result['target_folder']
+                            break
+
+            if not processed_refs:
+                self.llm_response.emit(
+                    "Sistema",
+                    "No hay referencias válidas para procesar.",
+                    True
+                )
+                return
+
+            if not target_folders:
+                self.llm_response.emit(
+                    "Sistema",
+                    "No se encontraron las carpetas destino. Por favor, verifica que las carpetas se hayan creado correctamente.",
+                    True
+                )
+                return
+
+            # Crear instancia del WebScrapingManager si no existe
+            if not hasattr(self.controller, 'web_scraping_manager'):
+                from managers.webScrapingManager import WebScrapingManager
+                self.controller.web_scraping_manager = WebScrapingManager(self.controller.config)
+
+            # Crear y configurar el hilo
+            from managers.webScrapingThread import WebScrapingThread
+            self.web_scraping_thread = WebScrapingThread(
+                self.controller.web_scraping_manager,
+                processed_refs,
+                target_folders
+            )
+
+            # Conectar señales
+            self.web_scraping_thread.progress.connect(
+                lambda msg: self.llm_response.emit("Sistema", msg, False)
+            )
+            self.web_scraping_thread.error.connect(
+                lambda msg: self.llm_response.emit("Sistema", msg, True)
+            )
+            self.web_scraping_thread.finished.connect(self._on_web_scraping_finished)
+
+            # Iniciar el hilo
+            self._transition_to_step(self.ESTADO_DESCARGA_HOJAS)
+            self.web_scraping_thread.start()
+
+        except Exception as e:
+            logger.error(f"Error al iniciar web scraping: {str(e)}")
+            self.llm_response.emit(
+                "Sistema",
+                f"Error al iniciar el proceso: {str(e)}",
+                True
+            )
+
+    def _on_web_scraping_finished(self):
+        """Maneja la finalización del proceso de web scraping."""
+        self.llm_response.emit(
+            "Sistema",
+            "Proceso de descarga de hojas de diseño completado.",
+            False
+        )
+        self._transition_to_step(self.ESTADO_FINALIZADO)
+
+    def stop_web_scraping(self):
+        """Detiene el proceso de web scraping si está en ejecución."""
+        if self.web_scraping_thread and self.web_scraping_thread.isRunning():
+            self.web_scraping_thread.stop()
+            self.web_scraping_thread.wait() 

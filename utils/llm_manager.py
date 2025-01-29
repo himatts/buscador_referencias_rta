@@ -12,6 +12,7 @@ from time import sleep
 import requests
 import tiktoken
 from datetime import datetime
+from PyQt5.QtCore import QObject, pyqtSignal
 
 # Configurar logging
 logging.basicConfig(
@@ -43,7 +44,7 @@ class ResponseError(LLMError):
     """Error en el procesamiento de la respuesta del LLM."""
     pass
 
-class LLMManager:
+class LLMManager(QObject):
     """
     Gestor para interacciones con el LLM a través de OpenRouter.ai.
     Utiliza el modelo Llama 3.3 70B Instruct para procesar texto y tomar decisiones.
@@ -60,8 +61,12 @@ class LLMManager:
         }
     }
     
+    tokens_updated = pyqtSignal(int, int)  # Nueva señal para tokens
+    cost_updated = pyqtSignal(float)  # Nueva señal para costo
+    
     def __init__(self):
         """Inicializa el gestor de LLM cargando la API key desde .env"""
+        super().__init__()
         load_dotenv()
         self.api_key = os.getenv('API_KEY_OPENROUTER')
         if not self.api_key:
@@ -156,36 +161,48 @@ class LLMManager:
             
     def calculate_cost(self, input_tokens: int, output_tokens: int) -> float:
         """
-        Calcula el costo de una interacción basado en los tokens de entrada y salida.
+        Calcula el costo basado en los tokens de entrada y salida.
         
         Args:
-            input_tokens: Cantidad de tokens de entrada
-            output_tokens: Cantidad de tokens de salida
+            input_tokens: Tokens de entrada para esta operación
+            output_tokens: Tokens de salida para esta operación
             
         Returns:
-            float: Costo total de la interacción en dólares
+            float: Costo calculado para esta operación
         """
         try:
-            # Obtener costos del modelo actual
-            model_costs = self.MODEL_COSTS.get(self.model, {
-                "input": 0.0000015,
-                "output": 0.0000020
-            })
+            # Actualizar totales
+            self.total_input_tokens += input_tokens
+            self.total_output_tokens += output_tokens
             
-            # Calcular costo total
-            input_cost = input_tokens * model_costs["input"]
-            output_cost = output_tokens * model_costs["output"]
+            # Calcular costo usando las tarifas por 1K tokens
+            input_cost = (input_tokens / 1000) * 0.0015  # $0.0015 por 1K tokens
+            output_cost = (output_tokens / 1000) * 0.002  # $0.002 por 1K tokens
             total_cost = input_cost + output_cost
             
             # Actualizar costo de la sesión
             self.session_cost += total_cost
+            
+            # Emitir señales de actualización
+            logger.info(f"Calculando costos:")
+            logger.info(f"  - Tokens entrada: {input_tokens} (${input_cost:.4f})")
+            logger.info(f"  - Tokens salida: {output_tokens} (${output_cost:.4f})")
+            logger.info(f"  - Costo total operación: ${total_cost:.4f}")
+            logger.info(f"  - Costo acumulado sesión: ${self.session_cost:.4f}")
+            
+            # Emitir señales
+            logger.debug("Emitiendo señal tokens_updated...")
+            self.tokens_updated.emit(self.total_input_tokens, self.total_output_tokens)
+            logger.debug("Emitiendo señal cost_updated...")
+            self.cost_updated.emit(self.session_cost)
+            logger.debug("Señales emitidas correctamente")
             
             return total_cost
             
         except Exception as e:
             logger.error(f"Error al calcular costo: {str(e)}")
             return 0.0
-            
+
     def get_session_cost(self) -> float:
         """
         Obtiene el costo total acumulado de la sesión.
@@ -219,7 +236,6 @@ class LLMManager:
         attempts = 0
         last_error = None
         
-        # Registrar el prompt en el archivo de log
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
@@ -253,7 +269,7 @@ class LLMManager:
             try:
                 # Contar tokens de entrada antes de la llamada
                 input_tokens = self.count_messages_tokens(messages)
-                self.total_input_tokens += input_tokens
+                logger.debug(f"Tokens de entrada contados: {input_tokens}")
                 
                 # Preparar parámetros
                 params = {
@@ -276,9 +292,9 @@ class LLMManager:
                 
                 # Contar tokens de salida
                 output_tokens = self.count_tokens(response_text)
-                self.total_output_tokens += output_tokens
+                logger.debug(f"Tokens de salida contados: {output_tokens}")
                 
-                # Calcular costo
+                # Calcular costo (esto también emitirá las señales)
                 cost = self.calculate_cost(input_tokens, output_tokens)
                 
                 # Registrar uso
@@ -498,6 +514,17 @@ class LLMManager:
         Returns:
             str: Nombre formateado
         """
+        # Cargar lista de colores válidos
+        try:
+            ruta_colores = os.path.join(os.path.dirname(__file__), 'colores.json')
+            with open(ruta_colores, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                colores_validos = data.get('materiales_unicos', [])
+                lista_colores = ", ".join(colores_validos)
+        except Exception as e:
+            logger.error(f"Error al cargar colores: {str(e)}")
+            lista_colores = "Error al cargar lista de colores"
+
         prompt = f"""Formatea este nombre de referencia siguiendo EXACTAMENTE estas reglas y pasos de razonamiento:
 
 1. ANÁLISIS INICIAL:
@@ -507,7 +534,6 @@ class LLMManager:
    d) Identifica si el nombre incluye "BI-COLOR" o términos similares que indiquen combinación de colores
    e) Identifica si hay colores simples y compuestos en la misma referencia
    f) IMPORTANTE: Identifica el orden original en que aparecen los colores
-   g) Identifica si aparece "MARQUEZ", "MARQUÉZ" o "MQZ" en la descripción
 
 2. LIMPIEZA DE INFORMACIÓN:
    - Eliminar dimensiones como "71,5X210X34 CM"
@@ -518,56 +544,52 @@ class LLMManager:
    - Si dice "BI-COLOR" y luego repite los colores, mantener solo una instancia
 
 3. FORMATEO DE COLORES:
-   a) REGLAS ESPECIALES PARA "MQZ":
-      - "MQZ" es un calificativo que SOLO se aplica al color "BLANCO"
-      - Siempre escribirlo como "BLANCO MQZ", nunca separado por guión
-      - NUNCA usar "MQZ" con otros colores que no sean "BLANCO"
-      - IMPORTANTE: En colores compuestos, "MQZ" SIEMPRE va inmediatamente después de "BLANCO":
-        Correcto: "(DUNA + BLANCO MQZ)"
-        Correcto: "(BLANCO MQZ-DUNA)"
-        Incorrecto: "(BLANCO-DUNA MQZ)"
-      - Si aparece "MARQUEZ" o "MARQUÉZ", reemplazar por "MQZ" siguiendo estas mismas reglas
-      - El orden de los colores sigue siendo importante, pero "MQZ" SIEMPRE va junto a "BLANCO"
+   a) LISTA DE COLORES VÁLIDOS:
+      Los únicos colores válidos son: {lista_colores}
    
-   b) ORDEN DE LOS COLORES:
+   b) REGLAS ESPECIALES DE FORMATEO:
+      - "BLANCO NEVADO", "BLANCO MARQUEZ", "BLANCO KRONOSPAN", "BLANCO KRONOS" se formatean como "BLANCO"
+      - "BLANCO HIGH GLOSS" siempre debe escribirse exactamente así
+      - Para materiales Kronospan (excepto blanco):
+        * "FRESNO KRONOS", "FRESNO EUROPEO KRONOS", "FRESNO KRONOSPAN", "FRESNO EUROPEO KRONOSPAN", "FRESNO EUROPEO KRONO" 
+          se formatean como "FRESNO KRONOSPAN"
+        * "NOGAL KRONOS", "NOGAL KRONOSPAN", "NOGAL EUROPEO KRONOS", "NOGAL EUROPEO KRONOSPAN"
+          se formatean como "NOGAL KRONOSPAN"
+        * Para cualquier otro material seguido de "KRONOS", "KRONOSPAN" o "KRONO", 
+          usar el formato "MATERIAL KRONOSPAN"
+      - Cualquier otro color debe estar en la lista de colores válidos
+      
+   c) ORDEN DE LOS COLORES:
       - SIEMPRE mantener el orden original de los colores como aparecen en la descripción
       - Para colores compuestos, el orden es crítico y define una variante diferente
         Ejemplo: "DUNA-BLANCO" es diferente de "BLANCO-DUNA"
       - Si el mismo color compuesto aparece múltiples veces, usar la primera aparición para determinar el orden
    
-   c) COLORES SIMPLES vs COMPUESTOS:
+   d) COLORES SIMPLES vs COMPUESTOS:
       - Un color simple es un solo color: "DUNA", "BLANCO", "WENGUE"
       - Un color compuesto usa guión: "DUNA-BLANCO", "BLANCO-WENGUE"
-      - NUNCA combinar un color simple con su versión compuesta en el mismo paréntesis
-        Ejemplo incorrecto: "(DUNA-BLANCO + BLANCO)"
    
-   d) REGLAS DE SEPARACIÓN:
+   e) REGLAS DE SEPARACIÓN:
       - Usar "+" con espacios alrededor para separar colores diferentes: "COLOR1 + COLOR2"
       - Usar "-" sin espacios para unir colores compuestos: "COLOR1-COLOR2"
       - Cambiar "/" o "\" por "-" en nombres compuestos, manteniendo el orden original
    
-   e) CASOS ESPECIALES:
+   g) CASOS ESP ECIALES:
       - Si un color simple aparece junto con un color compuesto que lo incluye, mantener ambos:
         Ejemplo: "(DUNA + DUNA-BLANCO)" es correcto porque DUNA es un color y DUNA-BLANCO es otro
       - Si hay dos colores compuestos, mantenerlos separados:
         Ejemplo: "(DUNA-BLANCO + BLANCO-WENGUE)" es correcto
-      - Para "BLANCO MQZ" en colores compuestos, mantener "MQZ" al final:
-        Ejemplo: "(DUNA-BLANCO MQZ + WENGUE)"
 
 4. FORMATO FINAL OBLIGATORIO:
    "CÓDIGO NÚMERO - NOMBRE (COLORES)"
    
    EJEMPLOS CORRECTOS:
-   - "MDB 7236 - MUEBLE BOTIQUIN BATH BI-COLOR (DUNA + BLANCO MQZ)"  # Cuando DUNA va primero
-   - "MBD 7237 - MUEBLE BOTIQUIN BATH BI-COLOR (BLANCO MQZ-DUNA)"    # Cuando BLANCO va primero
+   - "MDB 7236 - MUEBLE BOTIQUIN BATH BI-COLOR (DUNA + BLANCO)"
+   - "MBD 7237 - MUEBLE BOTIQUIN BATH BI-COLOR (BLANCO-DUNA)"
    - "CLB 9493 - CLOSET BARILOCHE (DUNA + DUNA-BLANCO)"
    - "CLB 9494 - CLOSET BARILOCHE (DUNA + BLANCO-WENGUE)"
-   - "CDB 9495 - CLOSET BARILOCHE (BLANCO MQZ + DUNA)"  # MQZ solo con BLANCO
+   - "CDB 9495 - CLOSET BARILOCHE (BLANCO + DUNA)"
    
-   EJEMPLOS INCORRECTOS:
-   - "CDB 9495 - CLOSET BARILOCHE (DUNA MQZ + BLANCO)"     # MQZ no debe usarse con DUNA
-   - "CDB 9496 - CLOSET BARILOCHE (DUNA-BLANCO MQZ)"       # MQZ no debe ir al final del color compuesto
-   - "MBD 7237 - MUEBLE BOTIQUIN BATH (BLANCO-DUNA MQZ)"   # MQZ debe ir inmediatamente después de BLANCO
 
 5. VALIDACIÓN DE REDUNDANCIAS:
    - ¿El nombre contiene los mismos colores múltiples veces?
@@ -576,17 +598,22 @@ class LLMManager:
    - Para muebles BI-COLOR, el nombre base NO debe incluir los colores
    - Verificar que los colores simples y compuestos estén correctamente separados
    - ¿Se mantiene el orden original de los colores?
-   - ¿"MQZ" solo se usa con "BLANCO" y está correctamente formateado?
 
 6. EJEMPLOS DE MANEJO DE REDUNDANCIAS Y COLORES:
-   Entrada: "MUEBLE BOTIQUIN BATH BI-COLOR DUNA/BLANCO (1C) DUNA/BLANCO MARQUEZ 72.6X41.2X35.2 CM"
-   Correcto: "MDB 7236 - MUEBLE BOTIQUIN BATH BI-COLOR (DUNA + BLANCO MQZ)"
+   Entrada: "MBD 7237 MUEBLE BOTIQUIN BATH BI-COLOR DUNA/BLANCO (1C) DUNA/BLANCO MARQUEZ 72.6X41.2X35.2 CM"
+   Correcto: "MDB 7236 - MUEBLE BOTIQUIN BATH BI-COLOR (DUNA + BLANCO)"
    
-   Entrada: "MUEBLE BOTIQUIN BATH BI-COLOR BLANCO/DUNA (1C) DUNA/BLANCO MARQUÉZ 72.6X41.2X35.2 CM"
-   Correcto: "MBD 7237 - MUEBLE BOTIQUIN BATH BI-COLOR (BLANCO MQZ-DUNA)"
+   Entrada: "MBD 7237 MUEBLE BOTIQUIN BATH BI-COLOR BLANCO/DUNA (1C) DUNA/BLANCO MARQUÉZ 72.6X41.2X35.2 CM"
+   Correcto: "MBD 7237 - MUEBLE BOTIQUIN BATH BI-COLOR (BLANCO-DUNA)"
    
-   Entrada: "CLOSET BARILOCHE DUNA BLANCO MARQUEZ"
-   Correcto: "CLB 9493 - CLOSET BARILOCHE (DUNA + BLANCO MQZ)"
+   Entrada: "MBD 7237 CLOSET BARILOCHE DUNA BLANCO MARQUEZ"
+   Correcto: "CLB 9493 - CLOSET BARILOCHE (DUNA + BLANCO)"
+
+   Entrada: "CLB 9494 CLOSET BARILOCHE FRESNO EUROPEO KRONOS"
+   Correcto: "CLB 9494 - CLOSET BARILOCHE (FRESNO KRONOSPAN)"
+
+   Entrada: "CLB 9495 CLOSET BARILOCHE NOGAL KRONOSPAN + BLANCO KRONOS"
+   Correcto: "CLB 9495 - CLOSET BARILOCHE (NOGAL KRONOSPAN + BLANCO)"
 
 7. VALIDACIÓN FINAL:
    Antes de devolver el nombre, verifica:
@@ -597,6 +624,7 @@ class LLMManager:
    - ¿Se mantiene toda la información importante sin repeticiones?
    - ¿Se respeta el orden original de los colores?
    - ¿"MQZ" solo se usa con "BLANCO" y está correctamente formateado como "BLANCO MQZ"?
+   - ¿Todos los colores usados están en la lista de colores válidos?
 
 Información a formatear:
 Código: {code}

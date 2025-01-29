@@ -31,7 +31,9 @@ class Config:
         
         # Valores por defecto
         self.default_config = {
-            'desktop_folder_name': 'PEDIDOS MERCADEO'
+            'desktop_folder_name': 'PEDIDOS MERCADEO',
+            'web_email': '',
+            'web_password': ''
         }
         
         # Asegurar que existe el directorio de configuración
@@ -133,4 +135,25 @@ class Config:
         """
         self.config['desktop_folder_name'] = name
         self._save_config(self.config)
-        logger.info("Nombre de carpeta de escritorio actualizado") 
+        logger.info("Nombre de carpeta de escritorio actualizado")
+
+    def get_web_email(self) -> str:
+        """Obtiene el email para el login web."""
+        return self.config.get('web_email', '')
+
+    def get_web_password(self) -> str:
+        """Obtiene la contraseña para el login web."""
+        return self.config.get('web_password', '')
+
+    def set_web_credentials(self, email: str, password: str):
+        """
+        Establece las credenciales para el login web.
+        
+        Args:
+            email: Email del usuario
+            password: Contraseña del usuario
+        """
+        self.config['web_email'] = email
+        self.config['web_password'] = password
+        self._save_config(self.config)
+        logger.info("Credenciales de login web actualizadas exitosamente") 
